@@ -1,0 +1,19 @@
+[package]
+name = "kult-fuse"
+version = "1.0.0"
+description = "KULT Fuse policy commitment and execution receipt program"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "kult_fuse"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.31.1"

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#06080b" />
+  <title>KULT FUSE — Verifiable probability-controlled execution</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="grain"></div>
+  <div id="shockFlash" class="shock-flash" aria-hidden="true"></div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="KULT Fuse home">
+        <span class="brand-mark">K</span>
+        <span><strong>KULT FUSE</strong><small>VERIFIABLE EXECUTION MANDATE</small></span>
+      </a>
+      <div class="top-actions">
+        <span class="network-pill"><i></i><span id="networkLabel">LOCAL DEMO</span></span>
+        <span id="statusBadge" class="status-pill">LOADING</span>
+        <button id="judgeDemoBtn" class="btn primary compact">▶ RUN JUDGE DEMO</button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="kicker">EVENT → PROBABILITY → POLICY → CONSEQUENCE</p>
+        <h1>Probability becomes<br/><span>executable state.</span></h1>
+        <p class="hero-sub">A user-authorized Solana policy maps prediction-market probability into bounded perpetual exposure. The agent may propose the mandate. It cannot rewrite it after authorization.</p>
+        <div class="hero-actions">
+          <button id="armBtn" class="btn primary">ARM FUSE</button>
+          <button id="chaosBtn" class="btn danger">⚡ CHAOS TEST</button>
+          <button id="verifyBtn" class="btn ghost">✓ VERIFY FUSE</button>
+        </div>
+      </div>
+      <div class="commitment-card">
+        <div class="commitment-top"><span>POLICY COMMITMENT</span><span id="integrityLabel" class="proof-dot">LOCAL VERIFIED</span></div>
+        <code id="policyHash">—</code>
+        <div class="commitment-grid">
+          <div><span>HARD CAP</span><strong id="capHero">$500</strong></div>
+          <div><span>KILL</span><strong id="killHero">&lt;35%</strong></div>
+          <div><span>CURVE</span><strong>STEP / V1</strong></div>
+          <div><span>REPLAY</span><strong>PROTECTED</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="flow-card" aria-label="Fuse execution flow">
+      <div class="flow-line"></div>
+      <div class="flow-node active" id="flowSignal"><span>01</span><small>EVENT SIGNAL</small><strong id="flowP">61.0%</strong><em id="flowSource">DEMO ORDERBOOK</em></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" id="flowPolicy"><span>02</span><small>POLICY</small><strong id="flowTarget">$0</strong><em>P → E VERIFIED</em></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" id="flowPosition"><span>03</span><small>PERP POSITION</small><strong id="flowFilled">$0</strong><em>SOL-PERP</em></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node" id="flowProof"><span>04</span><small>PROOF</small><strong id="flowProofText">READY</strong><em>HASHED RECEIPT</em></div>
+    </section>
+
+    <section class="workspace">
+      <article class="panel signal-panel">
+        <div class="panel-head"><div><span class="panel-index">01</span><h2>Event signal</h2></div><span id="modeTag" class="mini-pill">DEMO</span></div>
+        <h3>Fed cuts at next meeting</h3>
+        <div class="probability-wrap">
+          <div id="probDial" class="prob-dial"><div><small>YES</small><strong id="probability">61.0%</strong><span id="signalQuality">AWAITING SIGNAL</span></div></div>
+          <div class="orderbook-mini">
+            <div><span>BID</span><b id="bid">—</b></div>
+            <div><span>ASK</span><b id="ask">—</b></div>
+            <div><span>SPREAD</span><b id="spread">—</b></div>
+            <div><span>SEQ</span><b id="sequence">0</b></div>
+          </div>
+        </div>
+        <label class="slider-label" for="probSlider"><span>SIMULATED PROBABILITY</span><span id="sliderValue">61.0%</span></label>
+        <input id="probSlider" type="range" min="20" max="90" step="0.5" value="61" />
+        <div class="range-labels"><span>20%</span><span>55%</span><span>90%</span></div>
+        <div class="row-actions"><button id="applyBtn" class="btn primary">APPLY SIGNAL</button><button id="tickBtn" class="btn ghost">NEXT OBSERVATION</button></div>
+        <p class="microcopy">Ordinary band changes require two consistent observations. Kill conditions bypass debounce.</p>
+      </article>
+
+      <article class="panel position-panel">
+        <div class="panel-head"><div><span class="panel-index">02</span><h2>Consequence</h2></div><span class="mini-pill">SOL-PERP LONG</span></div>
+        <div class="position-hero">
+          <div><span>TARGET</span><strong id="target">$0</strong><small>curve-authorized</small></div>
+          <div class="position-separator">→</div>
+          <div><span>ACTUAL</span><strong id="filled">$0</strong><small>venue reconciled</small></div>
+        </div>
+        <div class="risk-meter"><div class="risk-meter-track"><i id="riskBar"></i></div><div><span>CAP UTILIZATION</span><b id="riskUtil">0%</b></div></div>
+        <div class="metric-grid">
+          <div><span>HARD CAP</span><b id="cap">$500</b></div>
+          <div><span>KILL</span><b id="kill">&lt;35%</b></div>
+          <div><span>MARK</span><b id="markPrice">—</b></div>
+          <div><span>UPNL</span><b id="pnl">$0.00</b></div>
+        </div>
+        <div class="safety-strip"><i></i><span>Fail-safe: uncertainty can reduce risk, never increase it.</span></div>
+        <div class="row-actions"><button id="emergencyKillBtn" class="btn danger-soft">EMERGENCY KILL</button><button id="resetBtn" class="btn ghost">RESET DEMO</button></div>
+      </article>
+
+      <article class="panel curve-panel span-2">
+        <div class="panel-head"><div><span class="panel-index">03</span><h2>Precommitted curve</h2></div><div class="head-tags"><span class="mini-pill">ONCHAIN RECOMPUTABLE</span><span class="mini-pill">HYSTERESIS ±1%</span></div></div>
+        <div class="curve-shell"><div id="curve" class="curve"></div></div>
+        <div class="policy-explain">
+          <div><span>LAST REASON</span><strong id="reason">NOOP</strong></div>
+          <div><span>EXPECTED TARGET</span><strong id="expectedTarget">$0</strong></div>
+          <div><span>POLICY RESULT</span><strong id="policyResult" class="green">READY</strong></div>
+          <div><span>RECEIPT HEAD</span><code id="receiptHash">—</code></div>
+        </div>
+      </article>
+
+      <article class="panel proof-panel">
+        <div class="panel-head"><div><span class="panel-index">04</span><h2>Proof rail</h2></div><span class="mini-pill">DON'T TRUST. VERIFY.</span></div>
+        <div class="proof-list">
+          <div><i id="proofCommit" class="proof-icon">✓</i><span><b>Policy committed</b><small>Curve hash fixed before execution</small></span></div>
+          <div><i id="proofCurve" class="proof-icon">✓</i><span><b>P → E bounded</b><small>Target cannot exceed authorized curve/cap</small></span></div>
+          <div><i id="proofKill" class="proof-icon">✓</i><span><b>Absorbing kill</b><small>Killed Fuse can never reopen</small></span></div>
+          <div><i id="proofReceipts" class="proof-icon muted">·</i><span><b>Receipt chain</b><small id="proofReceiptCopy">Waiting for first execution</small></span></div>
+        </div>
+        <button id="verifyBtn2" class="btn verify-wide">RUN INDEPENDENT VERIFIER</button>
+      </article>
+
+      <article class="panel receipts-panel">
+        <div class="panel-head"><div><span class="panel-index">05</span><h2>Execution receipts</h2></div><span id="receiptCount" class="mini-pill">0 RECEIPTS</span></div>
+        <div id="receipts" class="receipts empty">No execution receipts yet.</div>
+      </article>
+    </section>
+
+    <section id="verifySection" class="verification-section hidden">
+      <div class="section-head"><div><span>INDEPENDENT VERIFIER</span><h2 id="verifyHeadline">Policy compliance</h2></div><button id="closeVerify" class="icon-btn">×</button></div>
+      <div id="verifyPanel" class="verify-grid"></div>
+    </section>
+
+    <section id="replaySection" class="replay-section">
+      <div class="section-head"><div><span>DETERMINISTIC REPLAY</span><h2>Prove the policy without waiting for a live market move.</h2></div><button id="replayBtn" class="btn ghost">RUN REPLAY</button></div>
+      <div id="replayRows" class="replay-rows placeholder"><p>58% → 62% → 71% → 54% → 32%</p></div>
+    </section>
+
+
+    <section class="proof-drawer panel span-2" id="chainProofSection">
+      <div class="panel-head"><div><span class="panel-index">06</span><h2>Chain proof</h2></div><span id="chainProofMode" class="mini-pill">LOCAL VERIFIED</span></div>
+      <div class="chain-proof-grid">
+        <div><span>PROGRAM</span><a id="proofProgram" target="_blank" rel="noreferrer">NOT DEPLOYED</a></div>
+        <div><span>FUSE PDA</span><a id="proofPda" target="_blank" rel="noreferrer">NOT DEPLOYED</a></div>
+        <div><span>KILL TX</span><a id="proofKillTx" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
+        <div><span>FLASH OPEN</span><a id="proofFlashOpen" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
+        <div><span>FLASH CLOSE</span><a id="proofFlashClose" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
+        <div><span>BUILD</span><code id="proofBuild">DEV_UNSET</code></div>
+      </div>
+      <p class="microcopy">Judge Demo uses a simulated probability input and deterministic paper fills. This panel shows separate real devnet proof when deployment metadata is configured.</p>
+    </section>
+
+    <section class="infra-section">
+      <div><span>EVENT LIQUIDITY / DATA</span><strong>DFlow / Kalshi</strong></div>
+      <div><span>SOLANA STREAMING</span><strong>OrbitFlare</strong></div>
+      <div><span>MARK ORACLE</span><strong>Pyth optional</strong></div>
+      <div><span>PERP EXECUTION</span><strong id="venueLabel">Flash Trade / Paper</strong></div>
+      <div><span>POLICY ENFORCEMENT</span><strong>KULT Fuse Anchor</strong></div>
+    </section>
+
+    <footer><span>KULT FUSE v1.2 · SUBMISSION FREEZE</span><span>The agent proposes. The user authorizes. The policy executes. Solana verifies.</span></footer>
+  </main>
+
+  <div id="judgeOverlay" class="judge-overlay hidden">
+    <div class="judge-card">
+      <span class="judge-kicker">JUDGE MODE</span>
+      <h2 id="judgeTitle">Preparing clean Fuse...</h2>
+      <p id="judgeCopy">One click walks through the entire thesis using a deterministic demo path.</p>
+      <div class="judge-progress"><i id="judgeProgress"></i></div>
+      <div id="judgeSteps" class="judge-steps"></div>
+      <button id="closeJudge" class="btn ghost">CLOSE</button>
+    </div>
+  </div>
+
+  <div id="killOverlay" class="kill-overlay hidden">
+    <div class="kill-card"><span>CHAOS SIMULATION</span><h2>KILL CONDITION<br/>TRIGGERED</h2><div>71% <b>→</b> 28%</div><p>Target forced to zero. Only reduce/close actions remain valid.</p></div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
