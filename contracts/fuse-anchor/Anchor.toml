@@ -1,0 +1,16 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+kult_fuse = "Fg6PaFpoGXkYsidMpWxTWqozVBXzUBRrk4GkC8KQQkSy"
+
+[programs.devnet]
+kult_fuse = "Fg6PaFpoGXkYsidMpWxTWqozVBXzUBRrk4GkC8KQQkSy"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "node ../../scripts/anchor-local-test.mjs"

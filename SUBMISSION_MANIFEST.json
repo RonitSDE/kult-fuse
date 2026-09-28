@@ -1,0 +1,20 @@
+{
+  "name": "KULT Fuse",
+  "version": "1.2.0",
+  "buildTag": "submission-2026-10-09",
+  "buildSha": "FILL_AFTER_FINAL_COMMIT",
+  "publicDemoUrl": "FILL_AFTER_DEPLOY",
+  "network": "solana-devnet",
+  "programId": "FILL_AFTER_DEPLOY",
+  "fusePda": "FILL_AFTER_CREATE",
+  "proofTransactions": {
+    "create": "",
+    "arm": "",
+    "kill": "",
+    "flashOpen": "",
+    "flashResize": "",
+    "flashClose": ""
+  },
+  "judgeDemo": "simulated probability + deterministic paper execution",
+  "liveProof": "Solana devnet Fuse state + Flash Trade devnet lifecycle"
+}
