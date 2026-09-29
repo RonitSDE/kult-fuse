@@ -1,10 +1,8 @@
-import { PaperPerpAdapter } from './paper-perp.mjs';
 import { DriverPerpAdapter } from './driver-perp.mjs';
 import { FlashPerpAdapter } from './flash-perp.mjs';
 
 export async function makePerpAdapter(env = process.env) {
-  const mode = (env.PERP_ADAPTER || 'paper').toLowerCase();
-  if (mode === 'paper') return new PaperPerpAdapter({ symbol: env.PERP_SYMBOL || 'SOL-PERP' });
+  const mode = (env.PERP_ADAPTER || 'flash').toLowerCase();
   if (mode === 'driver') return new DriverPerpAdapter({ baseUrl: env.PERP_DRIVER_URL, token: env.PERP_DRIVER_TOKEN, symbol: env.PERP_SYMBOL || 'SOL-PERP' });
   if (mode === 'flash') {
     const adapter = new FlashPerpAdapter({

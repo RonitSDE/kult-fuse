@@ -6,35 +6,27 @@ KULT Fuse is a Solana execution mandate. A prediction-market probability enters 
 
 > **The agent proposes. The user authorizes. The policy executes. Solana verifies.**
 
-## Judge fast path
+## Live deployment
 
-After deployment, fill these links before submission:
+Everything runs on real data: a live Polymarket order book drives the probability, positions execute on Flash Trade devnet, and every commitment, kill and fill is a Solana devnet transaction against the deployed Fuse program.
 
-- Public demo: `PUBLIC_DEMO_URL`
-- Health: `PUBLIC_DEMO_URL/healthz`
+- Public app: `PUBLIC_URL` (health: `PUBLIC_URL/healthz`)
 - Fuse program: `FUSE_PROGRAM_ID`
-- Example Fuse PDA: `FUSE_PDA`
-- Create tx: `PROOF_CREATE_TX`
-- Kill tx: `PROOF_KILL_TX`
-- Flash open / resize / close: `PROOF_FLASH_OPEN_TX`, `PROOF_FLASH_RESIZE_TX`, `PROOF_FLASH_CLOSE_TX`
+- Current Fuse account and its transactions: shown live in the **Chain proof** panel and on every receipt (**ON-CHAIN ↗**)
 - Tagged build: `BUILD_TAG` + `BUILD_SHA`
 
-### One-click Judge Demo
-
-Click **RUN JUDGE DEMO**:
-
-`61% → $300 → 72% → $420 → simulated 28% shock → KILLED → $0 → VERIFIED`
-
-The Judge Demo intentionally uses a **simulated probability input and paper fills** so presentation reliability does not depend on external venues. Real devnet proof is displayed separately in the **Chain Proof** panel.
+Anyone can watch the dashboard and run the independent verifier. Arming, killing, settling and starting a new mandate need the operator token (`FUSE_ADMIN_TOKEN`, entered via **OPERATOR LOGIN**).
 
 ## Local run
 
-Requires Node.js 20+.
+Requires Node.js 22.9+ and a filled `.env` (see `.env.example`).
 
 ```bash
-cp .env.example .env
+cp .env.example .env      # then fill keys, market and token
 npm test
-npm run simulate
+npm run preflight
+npm run smoke:polymarket
+npm run smoke:flash
 npm start
 ```
 
@@ -51,14 +43,14 @@ curl http://localhost:8787/api/proof
 contracts/fuse-anchor/     Anchor program
 src/core/                  deterministic policy, risk, receipts, verifier
 src/worker/                reconcile + execute engine
-src/adapters/event/        manual + DFlow prediction sources
-src/adapters/perp/         paper + Flash Trade + generic driver
+src/adapters/event/        Polymarket + DFlow prediction sources
+src/adapters/perp/         Flash Trade + generic driver
 src/adapters/store/        file + Anchor clients
 src/http/                  API + static web server
-web/                       interactive judge frontend
-scripts/                   simulation, smoke, preflight, release checks
-tests/                     deterministic unit/integration tests
-docs/                      deploy, threat model, integrations, judge script
+web/                       live dashboard + operator controls
+scripts/                   smoke, preflight, release checks
+tests/                     deterministic unit/integration tests (+ fixtures)
+docs/                      deploy, threat model, integrations
 ```
 
 ## Core policy
@@ -99,23 +91,21 @@ Normal band changes require confirmation + hysteresis. Kill bypasses debounce.
 
 The worker cannot submit a policy target larger than the onchain curve permits through the Fuse program. A separately provisioned venue wallet must still be operationally restricted and reconciled; see `docs/THREAT_MODEL.md`.
 
-## Prediction source: DFlow / Kalshi
+## Prediction source: Polymarket
 
-Live mode reads the configured DFlow market orderbook, derives a midpoint probability, and rejects stale/wide-spread observations before they may increase risk.
-
-Configure:
+The worker reads the configured Polymarket market's live order book (public Gamma + CLOB APIs, no key), derives a midpoint probability from the chosen outcome's best bid/ask, and rejects stale/wide-spread observations before they may increase risk. A mandate never outlives its market: the policy expiry is capped at the market's end date.
 
 ```bash
-KULT_FUSE_MODE=live
-DFLOW_API_KEY=...
-DFLOW_MARKET_MINT=...
+EVENT_SOURCE=polymarket
+POLYMARKET_MARKET=<slug from polymarket.com/market/<slug>>
+POLYMARKET_OUTCOME=Yes
 ```
-
-Smoke:
 
 ```bash
-npm run smoke:dflow
+npm run smoke:polymarket
 ```
+
+DFlow / Kalshi is also supported with `EVENT_SOURCE=dflow`, `DFLOW_API_KEY` and `DFLOW_MARKET_MINT` (`npm run smoke:dflow`).
 
 ## Perp venue: Flash Trade
 
@@ -174,42 +164,24 @@ anchor deploy --provider.cluster devnet
 
 The included `anchor test` runs a local integration smoke covering `init → arm → 61%/$300 → 28%/KILLED → $0` and asserts a killed Fuse cannot reopen.
 
-Then populate:
-
-```bash
-FUSE_ONCHAIN=1
-FUSE_PROGRAM_ID=...
-FUSE_PDA=...
-FUSE_IDL_PATH=./contracts/fuse-anchor/target/idl/kult_fuse.json
-```
-
-Initialize/operate using the included Anchor client and deployment instructions in `docs/DEPLOY_FINAL.md`.
+Then set `FUSE_PROGRAM_ID` and the owner / oracle / execution keys. The server creates its own Fuse account on first boot (committed to the live policy and market) and a new one for each new mandate; see `docs/DEPLOY_FINAL.md`.
 
 ## API
 
-Public/read endpoints:
+Public:
 
 - `GET /healthz`
 - `GET /api/state`
 - `GET /api/proof`
+- `POST /api/verify` — independent policy/receipt verifier
 
-Mutation endpoints:
+Operator (require `Authorization: Bearer <FUSE_ADMIN_TOKEN>`):
 
-- `POST /api/reset`
 - `POST /api/arm`
-- `POST /api/probability` — demo only
-- `POST /api/tick`
-- `POST /api/chaos` — demo only, explicitly simulated
+- `POST /api/tick` — poll the market now (the worker also polls continuously)
 - `POST /api/kill`
 - `POST /api/settle`
-- `POST /api/verify`
-- `POST /api/replay`
-
-In `KULT_FUSE_MODE=live`, POST mutations require:
-
-```http
-Authorization: Bearer <FUSE_ADMIN_TOKEN>
-```
+- `POST /api/fuse/new` — start the next mandate after a kill/settle
 
 ## Production deployment gate
 
@@ -217,7 +189,6 @@ Before submission, run:
 
 ```bash
 npm test
-npm run simulate
 npm run release:check
 ```
 
@@ -225,11 +196,11 @@ Then complete the external proof checklist:
 
 1. Anchor build/test passes.
 2. Fuse program deployed to Solana devnet.
-3. Real Fuse PDA created and armed.
-4. Real program kill/state transition recorded.
+3. Server boots, creates its Fuse account, and the operator arms it.
+4. Live market moves drive real target changes, fills and receipts.
 5. Flash devnet `$20 → $30 → $0` lifecycle passes.
 6. Public URL and `/healthz` are continuously reachable.
-7. Proof txs are populated in `.env`.
+7. Optional pinned proof txs are populated in `.env`.
 8. Final commit is tagged and `BUILD_SHA` matches that commit.
 9. Record the video from that exact deployment.
 

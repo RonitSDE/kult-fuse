@@ -1,30 +1,37 @@
 # HTTP API
 
-## GET /healthz
-Returns deployment identity and health.
+## Public
 
-## GET /api/state
-Returns mode, integrity metadata, Fuse state, reconciled venue position and receipt chain.
+### GET /healthz
+Returns deployment identity and health (network, market, program, adapters, build).
 
-## GET /api/proof
-Returns explorer-ready program/PDA/transaction references populated from deployment env.
+### GET /api/state
+Returns integrity metadata, the live market, Fuse state (including its onchain transactions), the reconciled venue position and the receipt chain.
 
-## POST /api/arm
-Arms the current Fuse.
+### GET /api/proof
+Returns explorer-ready program / Fuse account / pinned transaction references.
 
-## POST /api/tick
-Fetches/validates one event observation and reconciles the target against actual venue exposure.
+### POST /api/verify
+Runs the independent policy/receipt verifier. Read-only.
 
-## POST /api/kill
+## Operator
+
+Require `Authorization: Bearer FUSE_ADMIN_TOKEN`.
+
+### POST /api/arm
+Arms the current Fuse onchain.
+
+### POST /api/tick
+Polls the live market once and reconciles the target against actual venue exposure. The server worker does this continuously (`AUTO_WORKER`).
+
+### POST /api/kill
 Authorized emergency kill. Absorbing state; subsequent risk increases are forbidden.
 
-## POST /api/verify
-Runs the independent policy/receipt verifier.
+### POST /api/settle
+Settles the Fuse once venue exposure is zero.
 
-## POST /api/replay
-Runs deterministic policy replay over supplied probabilities.
+### POST /api/fuse/new
+Starts the next mandate after the current Fuse is killed or settled: creates a new onchain Fuse account committed to the live policy and market.
 
-## POST /api/probability, POST /api/chaos, POST /api/reset
-Demo-only surfaces. Manual probability and chaos endpoints are disabled in live mode.
-
-Live mutations require `Authorization: Bearer FUSE_ADMIN_TOKEN`.
+### POST /api/auth
+Returns 200 when the operator token is valid.

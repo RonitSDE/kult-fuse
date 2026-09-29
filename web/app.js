@@ -10,10 +10,16 @@ let state = null;
 let proofState = null;
 let toastTimer = null;
 
+const TOKEN_KEY='kultFuseOperatorToken';
+function operatorToken(){try{return sessionStorage.getItem(TOKEN_KEY)||''}catch{return ''}}
+function setOperatorToken(t){try{t?sessionStorage.setItem(TOKEN_KEY,t):sessionStorage.removeItem(TOKEN_KEY)}catch{}}
+
 async function api(path, body) {
+  const headers={'content-type':'application/json'};
+  const token=operatorToken(); if(token) headers.authorization=`Bearer ${token}`;
   const res = await fetch(path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: {'content-type':'application/json'},
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   const data = await res.json();
@@ -27,7 +33,7 @@ function toast(message, kind='good') {
 }
 
 function currentProbability(fuse) {
-  return fuse.lastProbabilityBps > 0 ? fuse.lastProbabilityBps / 100 : Number($('#probSlider')?.value || 61);
+  return fuse.lastProbabilityBps > 0 ? fuse.lastProbabilityBps / 100 : null;
 }
 
 function rawTarget(policy,pBps){
@@ -54,7 +60,7 @@ function explorerUrl(kind,value){
 
 function receiptTxLink(r){
   const links=[];
-  if(r.txSignature && !String(r.txSignature).startsWith('paper_')) links.push(`<a href="${explorerUrl('tx',r.txSignature)}" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`);
+  if(r.txSignature) links.push(`<a href="${explorerUrl('tx',r.txSignature)}" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`);
   const anchored=r.chain?.txs?.filter(t=>t.ix==='record_fill').at(-1)||r.chain?.txs?.at(-1);
   if(anchored) links.push(`<a href="${explorerUrl('tx',anchored.signature)}" target="_blank" rel="noreferrer">ON-CHAIN ↗</a>`);
   return links.join(' ');
@@ -93,11 +99,12 @@ function setProofLink(selector, item, fallback) {
 
 function renderIntegrity(integrity={}) {
   const live=Boolean(integrity.onchain);
-  const label=live?`${String(integrity.network||'devnet').toUpperCase()} LIVE`:'LOCAL VERIFIED';
+  const label=`${String(integrity.network||'devnet').toUpperCase()} LIVE`;
   $('#integrityLabel').textContent=label; $('#integrityLabel').className=`proof-dot ${live?'proof-live':'proof-local'}`;
   $('#chainProofMode').textContent=label;
-  $('#networkLabel').textContent=live?`${String(integrity.network||'devnet').toUpperCase()} · ${String(integrity.perpAdapter||'').toUpperCase()}`:'LOCAL DEMO';
-  $('#venueLabel').textContent=String(integrity.perpAdapter||'paper').toLowerCase()==='flash'?'Flash Trade':'Paper adapter';
+  $('#networkLabel').textContent=`${String(integrity.network||'devnet').toUpperCase()} · ${String(integrity.perpAdapter||'').toUpperCase()}`;
+  $('#venueLabel').textContent=String(integrity.perpAdapter||'flash').toLowerCase()==='flash'?'Flash Trade':'External driver';
+  $('#eventSourceLabel').textContent=integrity.eventSource==='dflow'?'DFlow / Kalshi':'Polymarket';
   $('#proofBuild').textContent=`${integrity.buildTag||'dev'} · ${short(integrity.buildSha)}`;
 }
 
@@ -111,33 +118,35 @@ function render(s) {
   const pDisplay=currentProbability(f);
   $('#statusBadge').textContent=f.status; $('#statusBadge').className=`status-pill ${f.status.toLowerCase()}`;
   renderIntegrity(s.integrity||{});
-  $('#modeTag').textContent=(s.mode||'demo').toUpperCase();
+  renderMarket(s.market);
   $('#policyHash').textContent=f.policyHash;
-  $('#probability').textContent=pct(pDisplay); $('#flowP').textContent=pct(pDisplay);
-  $('#probDial').style.setProperty('--p',Math.max(0,Math.min(100,pDisplay)));
+  $('#probability').textContent=pDisplay==null?'—':pct(pDisplay); $('#flowP').textContent=pDisplay==null?'—':pct(pDisplay);
+  $('#probDial').style.setProperty('--p',Math.max(0,Math.min(100,pDisplay??0)));
   $('#target').textContent=money(f.desiredExposureUsd); $('#flowTarget').textContent=money(f.desiredExposureUsd);
   $('#filled').textContent=money(p.exposureUsd); $('#flowFilled').textContent=money(p.exposureUsd);
   $('#cap').textContent=money(f.policy.riskCapUsd); $('#capHero').textContent=money(f.policy.riskCapUsd);
   $('#kill').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`; $('#killHero').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`;
   $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—'; $('#pnl').textContent=money(p.unrealizedPnlUsd||0,2);
   $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.lastReceiptHash);
-  $('#expectedTarget').textContent=money(f.status==='KILLED'?0:rawTarget(f.policy,Math.round(pDisplay*100)));
+  $('#expectedTarget').textContent=money(f.status==='KILLED'||pDisplay==null?0:rawTarget(f.policy,Math.round(pDisplay*100)));
   $('#policyResult').textContent=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'WITHIN MANDATE':'VIOLATION';
   $('#policyResult').className=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'green':'';
   const util=Math.min(100,Math.abs(Number(p.exposureUsd||0))/f.policy.riskCapUsd*100); $('#riskBar').style.width=`${util}%`; $('#riskUtil').textContent=`${util.toFixed(0)}%`;
-  $('#armBtn').disabled=f.status!=='PROPOSED';
-  $('#chaosBtn').disabled=!['ARMED','OPEN','REDUCING'].includes(f.status);
-  $('#applyBtn').disabled=!['ARMED','OPEN','REDUCING'].includes(f.status);
-  $('#tickBtn').disabled=!['ARMED','OPEN','REDUCING'].includes(f.status);
-  $('#emergencyKillBtn').disabled=['PROPOSED','KILLED','SETTLED'].includes(f.status);
+  const op=Boolean(operatorToken()), active=['ARMED','OPEN','REDUCING'].includes(f.status);
+  $('#armBtn').disabled=!op||f.status!=='PROPOSED';
+  $('#tickBtn').disabled=!op||!active;
+  $('#emergencyKillBtn').disabled=!op||['PROPOSED','KILLED','SETTLED'].includes(f.status);
+  $('#settleBtn').disabled=!op||!['KILLED','ARMED','OPEN','REDUCING'].includes(f.status);
+  $('#newFuseBtn').disabled=!op||!['KILLED','SETTLED'].includes(f.status);
+  $('#operatorBtn').textContent=op?'OPERATOR ✓':'OPERATOR LOGIN';
 
   if(sig){
     $('#bid').textContent=pct(sig.bid*100); $('#ask').textContent=pct(sig.ask*100); $('#spread').textContent=`${sig.spreadBps} bps`; $('#sequence').textContent=f.oracleSequence;
     $('#signalQuality').textContent=sig.quality?`${sig.qualityReason} SIGNAL`:`${sig.qualityReason} — NO RISK ↑`;
     $('#signalQuality').style.color=sig.quality?'var(--lime)':'var(--amber)';
-    $('#flowSource').textContent=(sig.source||'EVENT SOURCE').toUpperCase();
+    $('#flowSource').textContent=String(sig.source||'EVENT SOURCE').split(':')[0].toUpperCase();
   }else{
-    $('#bid').textContent='—';$('#ask').textContent='—';$('#spread').textContent='—';$('#sequence').textContent=f.oracleSequence||0;$('#signalQuality').textContent='AWAITING SIGNAL';$('#flowSource').textContent='DEMO ORDERBOOK';
+    $('#bid').textContent='—';$('#ask').textContent='—';$('#spread').textContent='—';$('#sequence').textContent=f.oracleSequence||0;$('#signalQuality').textContent='AWAITING SIGNAL';$('#flowSource').textContent=String(s.integrity?.eventSource||'').toUpperCase();
   }
   $('#flowProofText').textContent=receipts.length?`${receipts.length} RECEIPT${receipts.length===1?'':'S'}`:'READY';
   setFlowActive('#flowSignal',true);setFlowActive('#flowPolicy',f.desiredExposureUsd!==0||f.status==='KILLED');setFlowActive('#flowPosition',Math.abs(Number(p.exposureUsd||0))>0||f.status==='KILLED');setFlowActive('#flowProof',receipts.length>0);
@@ -147,16 +156,16 @@ function render(s) {
 
 async function refresh(){const s=await api('/api/state');render(s);return s;}
 async function mutate(path,body,{quiet=false}={}){try{const out=await api(path,body);await refresh();if(!quiet)toast('State updated');return out}catch(e){toast(e.message,'bad');throw e}}
-async function setProbability(p){$('#probSlider').value=p;$('#sliderValue').textContent=pct(p);await mutate('/api/probability',{probability:p/100},{quiet:true});}
-async function tick(quiet=false){const out=await mutate('/api/tick',{}, {quiet:true});if(!quiet){if(out?.reason==='AWAITING_CONFIRMATION')toast(`Signal confirmed ${out.confirmationCount}/${state.fuse.policy.confirmationCount}`);else toast(out?.executed?'Position reconciled':'Observation accepted');}return out}
 
-function fireShockVisual(){const flash=$('#shockFlash');flash.classList.remove('fire');void flash.offsetWidth;flash.classList.add('fire');}
-async function chaosShock({overlay=true}={}){
-  if(!state||!['ARMED','OPEN','REDUCING'].includes(state.fuse.status)) return toast('Arm and open a Fuse first','bad');
-  fireShockVisual();
-  if(overlay){$('#killOverlay').classList.remove('hidden');setTimeout(()=>$('#killOverlay').classList.add('hidden'),1700)}
-  await mutate('/api/chaos',{}, {quiet:true}); $('#probSlider').value=28; $('#sliderValue').textContent='28.0%'; await refresh(); toast('Kill triggered. Target forced to zero.');
+function renderMarket(m){
+  if(!m) return;
+  $('#marketQuestion').textContent=m.question||m.id;
+  $('#outcomeLabel').textContent=String(m.outcome||'YES').toUpperCase();
+  const link=$('#marketLink'); link.textContent=`LIVE · ${String(m.kind||'').toUpperCase()}`;
+  if(m.url) link.href=m.url; else link.removeAttribute('href');
 }
+
+async function tick(){const out=await mutate('/api/tick',{}, {quiet:true});if(out?.reason==='AWAITING_CONFIRMATION')toast(`Signal confirmed ${out.confirmationCount}/${state.fuse.policy.confirmationCount}`);else toast(out?.executed?'Position reconciled':'Observation accepted');return out}
 
 async function runVerifier(){
   try{
@@ -167,35 +176,23 @@ async function runVerifier(){
   }catch(e){toast(e.message,'bad');throw e}
 }
 
-async function runReplay(){
-  try{const r=await api('/api/replay',{probabilities:[.58,.62,.71,.54,.32]});const el=$('#replayRows');el.className='replay-rows';el.innerHTML=r.rows.map(x=>`<div class="replay-row ${x.status==='KILLED'?'kill':''}"><strong>${(x.pBps/100).toFixed(0)}%</strong><span>${money(x.before)} → ${money(x.after)}</span><span>${x.reason.replaceAll('_',' ')}</span></div>`).join('');toast('Deterministic replay complete')}catch(e){toast(e.message,'bad')}
+async function operatorLogin(){
+  if(operatorToken()){setOperatorToken('');await refresh();return toast('Operator signed out');}
+  const t=window.prompt('Operator token (FUSE_ADMIN_TOKEN)');
+  if(!t) return;
+  setOperatorToken(t.trim());
+  try{await api('/api/auth',{});toast('Operator signed in');}catch(e){setOperatorToken('');toast('Invalid operator token','bad');}
+  await refresh();
 }
 
-const JUDGE_STEPS=['Clean state','Arm mandate','61% → $300','72% → $420','Chaos 28% → KILL','Verify receipts'];
-function renderJudgeSteps(done){$('#judgeSteps').innerHTML=JUDGE_STEPS.map((x,i)=>`<div class="judge-step ${i<done?'done':''}"><span>${String(i+1).padStart(2,'0')} · ${x}</span><b>${i<done?'✓':'·'}</b></div>`).join('');$('#judgeProgress').style.width=`${done/JUDGE_STEPS.length*100}%`}
-async function judgeStage(done,title,copy,fn){renderJudgeSteps(done);$('#judgeTitle').textContent=title;$('#judgeCopy').textContent=copy;if(fn)await fn();await sleep(650);renderJudgeSteps(done+1)}
-async function runJudgeDemo(){
-  $('#judgeOverlay').classList.remove('hidden');renderJudgeSteps(0);
-  try{
-    await judgeStage(0,'Resetting to a clean mandate…','Nothing hidden. We start from a fresh Fuse.',async()=>{await mutate('/api/reset',{}, {quiet:true});$('#probSlider').value=61;$('#sliderValue').textContent='61.0%'});
-    await judgeStage(1,'The user arms the policy.','The curve, hard cap and kill threshold are fixed before money moves.',async()=>mutate('/api/arm',{}, {quiet:true}));
-    await judgeStage(2,'Probability confirms at 61%.','Two observations survive debounce. The policy authorizes $300 SOL exposure.',async()=>{await setProbability(61);await tick(true);await tick(true)});
-    await judgeStage(3,'Probability reprices to 72%.','The same mandate deterministically resizes exposure to $420.',async()=>{await setProbability(72);await tick(true);await tick(true)});
-    await judgeStage(4,'Now break it.','A clearly-labeled chaos simulation crashes probability to 28%. Kill bypasses debounce.',async()=>{fireShockVisual();await chaosShock({overlay:true})});
-    await judgeStage(5,'Independent verification passes.','Policy commitment, P → E execution, cap, kill and receipt chain are all checked.',async()=>{await runVerifier()});
-    $('#judgeTitle').textContent='Fuse survived the shock.';$('#judgeCopy').textContent='The agent could propose the strategy. It could not exceed the user-authorized mandate. That is the product.';renderJudgeSteps(6);toast('Judge demo complete');
-  }catch(e){$('#judgeTitle').textContent='Demo interrupted';$('#judgeCopy').textContent=e.message;toast(e.message,'bad')}
-}
-
-$('#probSlider').addEventListener('input',()=>{const v=Number($('#probSlider').value);$('#sliderValue').textContent=pct(v);if(!state?.fuse?.lastProbabilityBps){$('#probability').textContent=pct(v);$('#probDial').style.setProperty('--p',v)}});
-$('#applyBtn').onclick=async()=>{const v=Number($('#probSlider').value);await setProbability(v);await tick(false)};
-$('#tickBtn').onclick=()=>tick(false);
+$('#tickBtn').onclick=()=>tick();
 $('#armBtn').onclick=()=>mutate('/api/arm',{});
-$('#chaosBtn').onclick=()=>chaosShock();
 $('#emergencyKillBtn').onclick=()=>mutate('/api/kill',{}).then(()=>toast('Emergency kill committed'));
-$('#resetBtn').onclick=async()=>{await mutate('/api/reset',{}, {quiet:true});$('#probSlider').value=61;$('#sliderValue').textContent='61.0%';$('#verifySection').classList.add('hidden');$('#replayRows').className='replay-rows placeholder';$('#replayRows').innerHTML='<p>58% → 62% → 71% → 54% → 32%</p>';toast('Demo reset')};
+$('#settleBtn').onclick=()=>mutate('/api/settle',{}).then(()=>toast('Fuse settled'));
+$('#newFuseBtn').onclick=async()=>{await mutate('/api/fuse/new',{}, {quiet:true});$('#verifySection').classList.add('hidden');await loadProof();toast('New mandate created on-chain')};
+$('#operatorBtn').onclick=operatorLogin;
 $('#verifyBtn').onclick=runVerifier;$('#verifyBtn2').onclick=runVerifier;$('#closeVerify').onclick=()=>$('#verifySection').classList.add('hidden');
-$('#replayBtn').onclick=runReplay;$('#judgeDemoBtn').onclick=runJudgeDemo;$('#closeJudge').onclick=()=>$('#judgeOverlay').classList.add('hidden');
-$('#killOverlay').onclick=()=>$('#killOverlay').classList.add('hidden');
 
 Promise.all([refresh(),loadProof()]).catch(e=>toast(e.message,'bad'));
+// The server worker trades continuously; keep the dashboard in step with it.
+setInterval(()=>refresh().catch(()=>{}),5000);

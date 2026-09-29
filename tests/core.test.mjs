@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDemoPolicy, hysteresisTarget, policyHash } from '../src/core/policy.mjs';
+import { hysteresisTarget, policyHash } from '../src/core/policy.mjs';
+import { testPolicy } from './fixtures/policy.mjs';
 import { makeProbabilityMark } from '../src/core/probability.mjs';
 import { initialFuse } from '../src/core/state.mjs';
 import { createReceipt, verifyReceiptChain } from '../src/core/receipt.mjs';
 import { verifyFuse } from '../src/core/verifier.mjs';
 import { replayPolicy } from '../src/core/replay.mjs';
 
-const policy = defaultDemoPolicy();
+const policy = testPolicy();
 
 test('policy hash is deterministic', () => {
   assert.equal(policyHash(policy), policyHash(JSON.parse(JSON.stringify(policy))));

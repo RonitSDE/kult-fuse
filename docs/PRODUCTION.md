@@ -5,7 +5,7 @@
 For the hackathon, one process is acceptable. For production, split:
 
 1. **Observer/API** — public/read-mostly UI and verifier data.
-2. **Oracle worker** — reads DFlow, validates spread/freshness, submits observations.
+2. **Oracle worker** — reads the prediction market (Polymarket / DFlow), validates spread/freshness, submits observations.
 3. **Execution worker** — computes target, reads actual perp position, sends reduce/increase actions, reconciles.
 4. **Anchor program** — mandate/lifecycle/replay/risk-cap enforcement and receipt head.
 5. **Persistent database/indexer** — receipts and operational telemetry. Onchain state remains the authorization anchor.
@@ -22,7 +22,7 @@ Page immediately on:
 
 - `KILLED` while actual venue exposure != 0;
 - target/actual mismatch beyond tolerance for > N seconds;
-- stale DFlow signal;
+- stale prediction-market signal;
 - receipt anchoring failure;
 - transaction ambiguity/retry exhaustion;
 - worker restart loop;

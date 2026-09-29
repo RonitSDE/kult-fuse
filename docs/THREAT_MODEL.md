@@ -38,11 +38,11 @@ Control: Agent proposes only. Committed policy, authorities and hard cap govern 
 Control: onchain target cap, allowed Fuse/market context, separate execution authority, replay nonces, operational key limits. A future version should bind venue/instruction verification more tightly onchain.
 
 ### Compromised oracle worker
-Control: separate oracle authority, freshness/sequence constraints. V1 still trusts this authority for the external DFlow observation. Production can add quorum/attestation schemes.
+Control: separate oracle authority, freshness/sequence constraints. V1 still trusts this authority for the external prediction-market observation. Production can add quorum/attestation schemes.
 
 ### Receipt database tampering
 Control: hash-linked receipts with latest hash anchored onchain. Any historical edit breaks verification.
 
 ## Known v1 trust boundaries
 
-External DFlow probability and external perp fills are not made trustless by the Fuse program. The program proves authorization and bounded policy state; it does not cryptographically prove an offchain venue's matching engine.
+External prediction-market probability and external perp fills are not made trustless by the Fuse program. The program proves authorization and bounded policy state; it does not cryptographically prove an offchain venue's matching engine.

@@ -17,10 +17,10 @@ The agent can propose the strategy. The user authorizes it. The policy governs i
 ## Why it is different
 Fuse is not another prediction market, perp DEX or AI trading bot. The product is the **verifiable relationship between markets**: probability becomes executable state, but only within a mandate fixed before capital moves.
 
-## Demo proof points
-- 61% probability → $300 target
-- 72% probability → $420 target
-- Chaos shock to 28% → absorbing kill → $0
+## Live proof points
+- Live Polymarket probability drives the target: 60–69.99% → $300, 70–79.99% → $420
+- Probability below 35% → absorbing onchain kill → position closed to $0 on Flash Trade devnet
+- Every commitment, kill and fill is a Solana devnet transaction linked from its receipt
 - Independent verifier → policy compliance verified
 
 ## Solana-native reason

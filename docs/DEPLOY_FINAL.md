@@ -1,6 +1,6 @@
 # Final deployment runbook
 
-This is the only runbook the submission deployer should need.
+This is the only runbook the submission deployer should need. Everything runs on live data: Polymarket for probability, Flash Trade devnet for execution, the Fuse program on Solana devnet for commitments.
 
 ## 1. Freeze the build
 
@@ -18,7 +18,6 @@ Do not record the video from a different commit.
 ```bash
 npm install
 npm test
-npm run simulate
 ```
 
 ## 3. Deploy the Anchor program to devnet
@@ -31,44 +30,46 @@ anchor test   # runs the included local end-to-end policy/kill smoke
 anchor deploy --provider.cluster devnet
 ```
 
-Save the program ID and transaction signature.
+Save the program ID and transaction signature. Keep `target/deploy/kult_fuse-keypair.json` safe; it is needed for upgrades.
 
 ## 4. Configure the runtime
 
-Set at minimum:
+Copy `.env.example` to `.env` and set at minimum:
 
 ```bash
-KULT_FUSE_MODE=live
+FUSE_ADMIN_TOKEN=<24+ char random token>
 SOLANA_CLUSTER=devnet
-SOLANA_RPC_URL=<OrbitFlare devnet-compatible RPC>
-DFLOW_API_KEY=<key>
-DFLOW_MARKET_MINT=<active market>
+SOLANA_RPC_URL=<devnet RPC>
+EVENT_SOURCE=polymarket
+POLYMARKET_MARKET=<active market slug>
 PERP_ADAPTER=flash
 FLASH_CLUSTER=devnet
 FLASH_POOL=devnet.1
 FLASH_PRIVATE_KEY_JSON='[...]'
-FUSE_ONCHAIN=1
 FUSE_PROGRAM_ID=<program>
-FUSE_PDA=<example fuse account>
 FUSE_OWNER_PRIVATE_KEY_JSON='[...]'
 FUSE_EXECUTION_PRIVATE_KEY_JSON='[...]'
 FUSE_ORACLE_PRIVATE_KEY_JSON='[...]'
-FUSE_ADMIN_TOKEN=<strong random token>
 BUILD_TAG=submission-2026-10-09
 BUILD_SHA=<git sha>
 ```
 
-Use separate owner/oracle/execution keys for the demo if practical.
+Use separate owner / oracle / execution / Flash keys. Fund each with devnet SOL; fund the Flash key with Flash devnet USDC (enough collateral for the policy's hard cap at `FLASH_LEVERAGE_X`).
 
-## 5. Flash devnet proof
-
-First read only:
+Pick a Polymarket market that is open, liquid (tight spread, within the policy's `maxSpreadBps`) and whose current probability sits inside the policy curve (`POLICY_FILE`, default `policy.example.json`).
 
 ```bash
-npm run smoke:flash
+npm run preflight
 ```
 
-Then tiny execution:
+## 5. Live data smoke
+
+```bash
+npm run smoke:polymarket   # live bid/ask and quality check for the chosen market
+npm run smoke:flash        # read-only Flash connection
+```
+
+Then a tiny Flash execution:
 
 ```bash
 CONFIRM_FLASH_SMOKE=YES \
@@ -77,31 +78,26 @@ FLASH_SMOKE_RESIZE_USD=30 \
 npm run smoke:flash
 ```
 
-Capture open, resize and close signatures. Confirm residual exposure is zero.
+Capture open, resize and close signatures into `PROOF_FLASH_*`. Confirm residual exposure is zero.
 
-## 6. Populate proof metadata
-
-```bash
-PROOF_CREATE_TX=...
-PROOF_ARM_TX=...
-PROOF_KILL_TX=...
-PROOF_FLASH_OPEN_TX=...
-PROOF_FLASH_RESIZE_TX=...
-PROOF_FLASH_CLOSE_TX=...
-```
-
-Restart the service. Verify:
+## 6. Start and arm
 
 ```bash
-curl $PUBLIC_DEMO_URL/healthz
-curl $PUBLIC_DEMO_URL/api/proof
+npm start   # or: docker compose -f deploy/compose.yaml up --build
 ```
 
-The frontend Chain Proof panel should now show clickable links and `DEVNET LIVE`.
+On first boot the server creates its Fuse account onchain, committed to the live policy and market. Check:
+
+```bash
+curl $PUBLIC_URL/healthz     # "onchain": true, "market": "<slug>"
+curl $PUBLIC_URL/api/proof
+```
+
+Open the app, click **OPERATOR LOGIN**, enter `FUSE_ADMIN_TOKEN`, then **ARM FUSE**. The worker now polls the market and trades within the mandate. After a kill or settle, **NEW MANDATE** creates the next Fuse account.
 
 ## 7. Public hosting
 
-Build the provided Docker image or run Node directly. Put TLS/reverse proxy in front of the service. Keep `.env` and wallet keys outside the image.
+Build the provided Docker image or run Node directly. Put TLS/reverse proxy in front of the service. Keep `.env` and wallet keys outside the image. The `.data` volume holds the current Fuse binding and receipts; keep it persistent.
 
 Health check path: `/healthz`.
 
@@ -113,14 +109,8 @@ npm run release:check
 
 Manually verify:
 
-- Judge Demo: 61 → 300; 72 → 420; 28 → killed/0; verifier PASS.
-- Chain Proof links open on explorer.
-- Flash live proof is separately labelled from Judge Simulation.
+- Receipts show live probabilities and **ON-CHAIN ↗** links that open on Solscan.
+- Chain proof panel shows the program and current Fuse account.
+- Independent verifier passes.
 - No private keys/API keys are in Git.
-- Public demo and health endpoint load from a private/incognito browser.
-
-## 9. Submission wording
-
-Do **not** say the paper Judge Demo is a live market execution. Say:
-
-> The one-click Judge Demo uses a deterministic event shock so the policy can be tested on demand. Separately, the Chain Proof panel exposes the deployed Fuse account and real Flash Trade devnet execution receipts.
+- Public app and health endpoint load from a private/incognito browser.

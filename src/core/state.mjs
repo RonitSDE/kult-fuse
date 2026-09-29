@@ -15,7 +15,7 @@ export function assertCanIncreaseRisk(fuse, nowSec = Math.floor(Date.now() / 100
   if (nowSec > fuse.policy.expiryTs) throw new Error('risk increase forbidden after expiry');
 }
 
-export function initialFuse({ id, owner = 'demo-owner', agent = 'athena', executionAuthority = 'demo-worker', oracleAuthority = 'dflow', policy, policyHash }) {
+export function initialFuse({ id, owner = null, agent = null, executionAuthority = null, oracleAuthority = null, policy, policyHash }) {
   return {
     id,
     owner,

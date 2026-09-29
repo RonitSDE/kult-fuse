@@ -75,10 +75,6 @@ export class FuseEngine {
       const raw = rawObservation || await this.eventSource.read();
       if (raw.sequence <= this.fuse.oracleSequence) throw new Error('oracle replay rejected');
       const mark = makeProbabilityMark(raw, this.fuse.policy);
-      if (this.chainHooks?.acceptObservation) {
-        const markPrice = Math.round(Number((await this.perp.getPosition()).markPrice || 0) * 1e6);
-        await this.chain('accept_observation', () => this.chainHooks.acceptObservation({ pBps: mark.pBps, markPrice, sequence: raw.sequence, observedTs: Math.floor(mark.observedAtMs/1000) }));
-      }
       this.fuse.oracleSequence = raw.sequence;
       this.fuse.lastProbabilityBps = mark.pBps;
       this.fuse.lastSignal = { bid: mark.bid, ask: mark.ask, spreadBps: mark.spreadBps, ageSec: mark.ageSec, quality: mark.quality, qualityReason: mark.qualityReason, source: mark.source };
@@ -91,10 +87,6 @@ export class FuseEngine {
       }
 
       const curve = hysteresisTarget(this.fuse.policy, mark.pBps, this.fuse.desiredExposureUsd);
-      if (curve.killed) {
-        this.fuse.status = FuseStatus.KILLED;
-        this.fuse.killedAt ||= Date.now();
-      }
 
       // Confirmation/debounce: kills bypass debounce; ordinary band changes require N consistent observations.
       let proposed = curve.targetUsd;
@@ -109,12 +101,22 @@ export class FuseEngine {
 
       const actual = await this.perp.getPosition();
       const risk = evaluateRisk({ fuse: this.fuse, proposedTargetUsd: proposed, unrealizedPnlUsd: Number(actual.unrealizedPnlUsd || 0) });
-      if (risk.kill) {
+      proposed = risk.kill ? 0 : risk.targetUsd;
+      const killing = curve.killed || risk.kill;
+
+      // Unchanged target: nothing new to commit onchain; only keep the venue reconciled.
+      if (!killing && proposed === this.fuse.desiredExposureUsd) {
+        this.fuse.lastReasonCode = Reason.NOOP;
+        await this.persist(this.fuse);
+        return this.reconcile({ mark, reason: Reason.NOOP });
+      }
+
+      const { chainTxs: _keep, ...uncommitted } = this.fuse;
+      const rollback = structuredClone(uncommitted);
+      if (killing) {
         this.fuse.status = FuseStatus.KILLED;
         this.fuse.killedAt ||= Date.now();
-        proposed = 0;
-      } else proposed = risk.targetUsd;
-
+      }
       const beforeTarget = this.fuse.desiredExposureUsd;
       this.fuse.desiredExposureUsd = proposed;
       this.fuse.lastMarkPrice = Number(actual.markPrice || 0);
@@ -125,12 +127,25 @@ export class FuseEngine {
       const reducingRisk = Math.abs(proposed) <= Math.abs(Number(actual.exposureUsd || 0)) || proposed === 0;
       if (this.chainHooks) {
         try {
+          if (this.chainHooks.acceptObservation) {
+            const markPrice = Math.round(Number(actual.markPrice || 0) * 1e6);
+            await this.chain('accept_observation', () => this.chainHooks.acceptObservation({ pBps: mark.pBps, markPrice, sequence: raw.sequence, observedTs: Math.floor(mark.observedAtMs/1000) }));
+          }
           if (curve.killed && this.chainHooks.killProbability) await this.chain('trigger_probability_kill', () => this.chainHooks.killProbability());
           else if (risk.kill && this.chainHooks.killAuthorized) await this.chain('trigger_authorized_kill', () => this.chainHooks.killAuthorized(this.fuse.lastReasonCode));
           if (this.chainHooks.setTarget) await this.chain('set_target', () => this.chainHooks.setTarget({ targetUsd: proposed, nonce: this.fuse.executionNonce, reason: this.fuse.lastReasonCode }));
           this.chainWarning = null;
         } catch (e) {
-          if (!reducingRisk) throw e;
+          if (!reducingRisk) {
+            // A risk increase the chain has not authorized must not reach the venue: undo it locally.
+            // Keep the spent nonce, since a timed-out tx may still have landed and a reused nonce would be rejected as replay.
+            const { executionNonce } = this.fuse;
+            Object.assign(this.fuse, rollback, { executionNonce, pendingExecutionNonce: 0, pendingTargetExposureUsd: 0 });
+            this.pendingChainTxs = [];
+            this.chainWarning = `risk increase not committed onchain, will retry: ${e.message}`;
+            await this.persist(this.fuse);
+            throw e;
+          }
           this.chainWarning = `risk-reducing chain commitment pending: ${e.message}`;
         }
       }

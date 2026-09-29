@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultDemoPolicy, policyHash } from '../src/core/policy.mjs';
+import { policyHash } from '../src/core/policy.mjs';
+import { testPolicy } from './fixtures/policy.mjs';
 import { initialFuse } from '../src/core/state.mjs';
-import { ManualEventSource } from '../src/adapters/event/manual-event.mjs';
-import { PaperPerpAdapter } from '../src/adapters/perp/paper-perp.mjs';
+import { ManualEventSource } from './fixtures/manual-event.mjs';
+import { PaperPerpAdapter } from './fixtures/paper-perp.mjs';
 import { FuseEngine } from '../src/worker/fuse-engine.mjs';
 import { verifyReceiptChain } from '../src/core/receipt.mjs';
 
 function fixture() {
-  const policy=defaultDemoPolicy();
+  const policy=testPolicy();
   const fuse=initialFuse({id:'test',policy,policyHash:policyHash(policy)});
   const event=new ManualEventSource({initialProbability:.61,spread:.02});
   const perp=new PaperPerpAdapter({initialPrice:150});
@@ -76,7 +77,7 @@ test('manual emergency kill is absorbing and closes exposure', async()=>{
 });
 
 test('onchain signatures are attached to receipts without breaking the hash chain', async()=>{
-  const policy=defaultDemoPolicy();
+  const policy=testPolicy();
   const fuse=initialFuse({id:'chain',policy,policyHash:policyHash(policy)});
   const event=new ManualEventSource({initialProbability:.61,spread:.02});
   const perp=new PaperPerpAdapter({initialPrice:150});
@@ -92,4 +93,42 @@ test('onchain signatures are attached to receipts without breaking the hash chai
   assert.ok(receipts.length>=2);
   for(const r of receipts) assert.equal(r.chain.txs.at(-1).ix,'record_fill');
   assert.equal(verifyReceiptChain(receipts,fuse.policyHash).ok,true);
+});
+
+function chainFixture(overrides = {}) {
+  const policy=testPolicy();
+  const fuse=initialFuse({id:'chain2',policy,policyHash:policyHash(policy)});
+  const event=new ManualEventSource({initialProbability:.61,spread:.02});
+  const perp=new PaperPerpAdapter({initialPrice:150});
+  const calls=[]; let n=0;
+  const hook=(ix)=>async(arg)=>{ calls.push({ix,arg}); if(overrides[ix]) await overrides[ix](arg); return `sig${++n}`; };
+  const chainHooks=Object.fromEntries(['arm','acceptObservation','setTarget','killProbability','killAuthorized','recordFill','settle'].map(k=>[k,hook(k)]));
+  const engine=new FuseEngine({fuse,eventSource:event,perpAdapter:perp,chainHooks});
+  return {fuse,event,perp,calls,engine};
+}
+
+test('unchanged observations send no onchain transactions', async()=>{
+  const x=chainFixture();
+  await x.engine.arm(); await twoTicks(x.engine);
+  const after=x.calls.length;
+  for(let i=0;i<5;i+=1) await x.engine.tick();
+  assert.equal(x.calls.length,after);
+  assert.equal(Math.round((await x.perp.getPosition()).exposureUsd),300);
+});
+
+test('a risk increase that fails onchain never reaches the venue and retries with a fresh nonce', async()=>{
+  let fail=true;
+  const x=chainFixture({ setTarget: async()=>{ if(fail) throw new Error('Transaction was not confirmed'); } });
+  await x.engine.arm();
+  await x.engine.tick();
+  await assert.rejects(()=>x.engine.tick(),/not confirmed/);
+  assert.equal(x.fuse.desiredExposureUsd,0);
+  assert.equal(x.fuse.status,'ARMED');
+  assert.equal((await x.perp.getPosition()).exposureUsd,0);
+  const burned=x.fuse.executionNonce;
+  fail=false;
+  await x.engine.tick();
+  assert.equal(Math.round((await x.perp.getPosition()).exposureUsd),300);
+  assert.equal(x.fuse.lastReasonCode,'INITIAL_OPEN');
+  assert.equal(x.calls.filter(c=>c.ix==='setTarget').at(-1).arg.nonce,burned+1);
 });

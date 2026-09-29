@@ -11,14 +11,14 @@
     "start": "node --env-file-if-exists=.env src/http/server.mjs",
     "dev": "node --env-file-if-exists=.env --watch src/http/server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "simulate": "node --env-file-if-exists=.env scripts/simulate.mjs",
     "verify": "node --env-file-if-exists=.env scripts/verify.mjs",
     "smoke:dflow": "node --env-file-if-exists=.env scripts/smoke-dflow.mjs",
     "smoke:flash": "node --env-file-if-exists=.env scripts/smoke-flash.mjs",
     "preflight": "node --env-file-if-exists=.env scripts/preflight.mjs",
     "release:check": "node --env-file-if-exists=.env scripts/release-check.mjs",
     "anchor:init": "node --env-file-if-exists=.env scripts/init-anchor.mjs",
-    "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs"
+    "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs",
+    "smoke:polymarket": "node --env-file-if-exists=.env scripts/smoke-polymarket.mjs"
   },
   "optionalDependencies": {
     "@coral-xyz/anchor": "0.31.1",

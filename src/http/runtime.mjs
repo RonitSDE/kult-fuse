@@ -1,36 +1,39 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import { FileStore } from '../adapters/store/file-store.mjs';
-import { ManualEventSource } from '../adapters/event/manual-event.mjs';
 import { DFlowEventSource } from '../adapters/event/dflow-event.mjs';
+import { PolymarketEventSource } from '../adapters/event/polymarket-event.mjs';
 import { makePerpAdapter } from '../adapters/perp/factory.mjs';
-import { defaultDemoPolicy, policyHash, validatePolicy } from '../core/policy.mjs';
+import { policyHash, validatePolicy } from '../core/policy.mjs';
 import { initialFuse } from '../core/state.mjs';
 import { FuseEngine } from '../worker/fuse-engine.mjs';
 import { verifyFuse } from '../core/verifier.mjs';
-import { replayPolicy } from '../core/replay.mjs';
 import { AnchorFuseClient } from '../adapters/store/anchor-fuse-client.mjs';
+
+const TERMINAL = ['KILLED', 'SETTLED'];
 
 export class Runtime {
   constructor(env = process.env) {
     this.env = env;
-    this.mode = (env.KULT_FUSE_MODE || 'demo').toLowerCase();
     this.store = new FileStore(env.DATA_DIR || './.data');
-    this.manualEvent = new ManualEventSource({ initialProbability: 0.61 });
   }
 
   async init() {
     await this.store.init();
-    let fuse = await this.store.read('fuse');
-    if (!fuse) fuse = this.newFuse();
     this.receipts = await this.store.read('receipts', []);
+    this.eventSource = this.makeEventSource();
+    this.market = await this.eventSource.init();
+    this.basePolicy = JSON.parse(await fs.readFile(this.env.POLICY_FILE || './policy.example.json', 'utf8'));
     this.perp = await makePerpAdapter(this.env);
-    this.eventSource = this.mode === 'live'
-      ? new DFlowEventSource({ baseUrl: this.env.DFLOW_BASE_URL, apiKey: this.env.DFLOW_API_KEY, marketMint: this.env.DFLOW_MARKET_MINT })
-      : this.manualEvent;
     this.chain = await this.store.read('chain', null);
     this.chainHooks = await this.makeChainHooks();
-    // Each local fuse is bound to its own onchain account; provision one if this fuse has none yet.
-    if (this.chainHooks && (!fuse.chainFuse || fuse.chainFuse !== this.chain?.fusePda)) {
+
+    let fuse = await this.store.read('fuse');
+    // Each local fuse is bound to one onchain account and one market; start a new mandate if either changed.
+    if (!fuse || fuse.chainFuse !== this.chain?.fusePda || fuse.policy.eventMarket !== this.market.id) {
+      if (fuse && !TERMINAL.includes(fuse.status) && Math.abs(Number(fuse.filledExposureUsd || 0)) >= 0.01) {
+        throw new Error(`fuse ${fuse.id} on ${fuse.policy.eventMarket} still holds ${fuse.filledExposureUsd} USD exposure; kill or settle it before switching market`);
+      }
       fuse = this.newFuse();
       await this.provisionChainFuse(fuse);
       this.receipts = [];
@@ -41,36 +44,64 @@ export class Runtime {
     return this;
   }
 
-  newFuse(policy = null) {
-    const next = policy || defaultDemoPolicy();
-    if (!policy && this.mode === 'live') {
-      next.eventMarket = this.env.DFLOW_MARKET_MINT || next.eventMarket;
-      next.venue = (this.env.PERP_ADAPTER || 'flash').toUpperCase();
-      next.marketId = this.env.PERP_SYMBOL || 'SOL-PERP';
+  makeEventSource() {
+    const kind = (this.env.EVENT_SOURCE || 'polymarket').toLowerCase();
+    if (kind === 'polymarket') {
+      const src = new PolymarketEventSource({ market: this.env.POLYMARKET_MARKET, outcome: this.env.POLYMARKET_OUTCOME || 'Yes', gammaUrl: this.env.POLYMARKET_GAMMA_URL, clobUrl: this.env.POLYMARKET_CLOB_URL });
+      const init = src.init.bind(src);
+      src.init = async () => { const i = await init(); return { kind, id: i.slug, question: i.question, outcome: i.outcome, url: i.url, endDateMs: i.endDateMs }; };
+      return src;
     }
-    validatePolicy(next);
-    return initialFuse({ id: `fuse_${crypto.randomBytes(5).toString('hex')}`, policy: next, policyHash: policyHash(next) });
+    if (kind === 'dflow') {
+      const src = new DFlowEventSource({ baseUrl: this.env.DFLOW_BASE_URL, apiKey: this.env.DFLOW_API_KEY, marketMint: this.env.DFLOW_MARKET_MINT });
+      src.init = async () => ({ kind, id: this.env.DFLOW_MARKET_MINT, question: this.env.DFLOW_MARKET_MINT, outcome: 'YES', url: null, endDateMs: null });
+      return src;
+    }
+    throw new Error(`unsupported EVENT_SOURCE=${kind}`);
   }
 
-  onchain() { return String(this.env.FUSE_ONCHAIN || '0') === '1'; }
-  activeFusePda() { return this.chain?.fusePda || this.env.FUSE_PDA || null; }
+  newFuse() {
+    const policy = structuredClone(this.basePolicy);
+    policy.eventMarket = this.market.id;
+    policy.outcomeId = String(this.market.outcome).toUpperCase();
+    policy.venue = (this.env.PERP_ADAPTER || 'flash').toUpperCase();
+    policy.marketId = this.env.PERP_SYMBOL || 'SOL-PERP';
+    // A mandate never outlives the market it is priced on.
+    if (this.market.endDateMs) {
+      const marketEnd = Math.floor(this.market.endDateMs / 1000);
+      if (marketEnd <= Math.floor(Date.now() / 1000) + 60) throw new Error(`market ${this.market.id} end date has passed; choose an active market`);
+      policy.expiryTs = Math.min(policy.expiryTs, marketEnd);
+    }
+    validatePolicy(policy);
+    const { owner, oracle, exec } = this.chainClients;
+    return initialFuse({
+      id: `fuse_${crypto.randomBytes(5).toString('hex')}`,
+      owner: owner.wallet.publicKey.toBase58(),
+      agent: owner.wallet.publicKey.toBase58(),
+      executionAuthority: exec.wallet.publicKey.toBase58(),
+      oracleAuthority: oracle.wallet.publicKey.toBase58(),
+      policy,
+      policyHash: policyHash(policy)
+    });
+  }
+
+  activeFusePda() { return this.chain?.fusePda || null; }
 
   async makeChainHooks() {
-    if (!this.onchain()) return null;
     const mk = async (key, name) => {
-      if (!key) throw new Error(`FUSE_ONCHAIN=1 requires ${name}`);
-      const c=new AnchorFuseClient({ ...this.env, FUSE_PDA:this.activeFusePda() || '', FUSE_AUTHORITY_PRIVATE_KEY_JSON:key });
+      if (!key) throw new Error(`${name} is required`);
+      const c = new AnchorFuseClient({ ...this.env, FUSE_PDA: this.activeFusePda() || '', FUSE_AUTHORITY_PRIVATE_KEY_JSON: key });
       await c.init(); return c;
     };
-    const owner=await mk(this.env.FUSE_OWNER_PRIVATE_KEY_JSON, 'FUSE_OWNER_PRIVATE_KEY_JSON');
-    const oracle=await mk(this.env.FUSE_ORACLE_PRIVATE_KEY_JSON, 'FUSE_ORACLE_PRIVATE_KEY_JSON');
-    const exec=await mk(this.env.FUSE_EXECUTION_PRIVATE_KEY_JSON, 'FUSE_EXECUTION_PRIVATE_KEY_JSON');
+    const owner = await mk(this.env.FUSE_OWNER_PRIVATE_KEY_JSON, 'FUSE_OWNER_PRIVATE_KEY_JSON');
+    const oracle = await mk(this.env.FUSE_ORACLE_PRIVATE_KEY_JSON, 'FUSE_ORACLE_PRIVATE_KEY_JSON');
+    const exec = await mk(this.env.FUSE_EXECUTION_PRIVATE_KEY_JSON, 'FUSE_EXECUTION_PRIVATE_KEY_JSON');
     this.chainClients = { owner, oracle, exec };
     return {
-      arm:()=>owner.arm(), settle:()=>owner.settle(),
-      acceptObservation:(x)=>oracle.acceptObservation(x),
-      setTarget:(x)=>exec.setTarget(x), killProbability:()=>exec.killProbability(), killAuthorized:(r)=>exec.killAuthorized(r),
-      recordFill:(x)=>exec.recordFill(x)
+      arm: () => owner.arm(), settle: () => owner.settle(),
+      acceptObservation: (x) => oracle.acceptObservation(x),
+      setTarget: (x) => exec.setTarget(x), killProbability: () => exec.killProbability(), killAuthorized: (r) => exec.killAuthorized(r),
+      recordFill: (x) => exec.recordFill(x)
     };
   }
 
@@ -93,7 +124,7 @@ export class Runtime {
     const { fuse: pda, signature } = await owner.initFuse({
       fuseId: BigInt(Date.now()),
       policy: fuse.policy,
-      agent: owner.wallet.publicKey.toBase58(),
+      agent: fuse.agent,
       executionAuthority: exec.wallet.publicKey.toBase58(),
       oracleAuthority: oracle.wallet.publicKey.toBase58()
     });
@@ -105,21 +136,20 @@ export class Runtime {
     await this.store.write('chain', this.chain);
   }
 
-  async reset() {
-    if (this.mode === 'live') throw new Error('reset is disabled in live mode');
+  // Starts the next mandate once the current one is finished (killed or settled, no open exposure).
+  async newMandate() {
     const current = this.engine.fuse;
-    // An untouched onchain fuse can be reused as-is; anything else needs a new account.
-    if (this.chainHooks && current.status === 'PROPOSED' && current.chainFuse === this.chain?.fusePda && !this.receipts.length) return this.getState();
+    if (current.status === 'PROPOSED') return this.getState();
+    if (!TERMINAL.includes(current.status)) throw new Error(`current fuse is ${current.status}; kill or settle it first`);
+    const position = await this.perp.getPosition();
+    if (Math.abs(Number(position.exposureUsd || 0)) >= 0.01) throw new Error('venue position is still open; wait for the close to reconcile');
     const cooldownMs = Number(this.env.FUSE_RESET_COOLDOWN_SEC ?? 10) * 1000;
-    if (this.chainHooks && Date.now() - (this.chain?.createdAt || 0) < cooldownMs) throw new Error(`reset cooldown: wait ${Math.ceil((cooldownMs - (Date.now() - this.chain.createdAt)) / 1000)}s`);
+    if (Date.now() - (this.chain?.createdAt || 0) < cooldownMs) throw new Error(`cooldown: wait ${Math.ceil((cooldownMs - (Date.now() - this.chain.createdAt)) / 1000)}s`);
     // Provision first so a failed onchain create leaves the current fuse untouched.
     const fuse = this.newFuse();
-    if (this.chainHooks) await this.provisionChainFuse(fuse);
-    await this.store.remove('fuse');
-    await this.store.remove('receipts');
+    await this.provisionChainFuse(fuse);
     this.receipts = [];
-    this.perp = await makePerpAdapter({ ...this.env, PERP_ADAPTER: 'paper' });
-    this.eventSource = this.manualEvent = new ManualEventSource({ initialProbability: 0.61 });
+    await this.store.write('receipts', this.receipts);
     this.bindEngine(fuse);
     await this.persist(fuse);
     return this.getState();
@@ -127,23 +157,20 @@ export class Runtime {
 
   async getState() {
     const position = await this.perp.getPosition();
-    return { mode: this.mode, integrity: this.integrity(), fuse: this.engine.snapshot(), position, receipts: this.receipts };
+    return { integrity: this.integrity(), market: this.market, fuse: this.engine.snapshot(), position, receipts: this.receipts };
   }
 
-
   integrity() {
-    const onchain = this.onchain();
-    const adapter = (this.env.PERP_ADAPTER || 'paper').toLowerCase();
     return {
-      onchain,
+      onchain: true,
       network: this.env.SOLANA_CLUSTER || 'devnet',
-      perpAdapter: adapter,
-      eventSource: this.mode === 'live' ? 'dflow' : 'manual-simulation',
+      perpAdapter: (this.env.PERP_ADAPTER || 'flash').toLowerCase(),
+      eventSource: this.market?.kind || null,
       programId: this.env.FUSE_PROGRAM_ID || null,
       fusePda: this.activeFusePda(),
       buildTag: this.env.BUILD_TAG || 'dev',
       buildSha: this.env.BUILD_SHA || 'DEV_UNSET',
-      publicUrl: this.env.PUBLIC_DEMO_URL || null
+      publicUrl: this.env.PUBLIC_URL || null
     };
   }
 
@@ -167,22 +194,9 @@ export class Runtime {
     };
   }
 
-  async setDemoProbability(p) {
-    if (this.mode === 'live') throw new Error('manual probability disabled in live mode');
-    this.manualEvent.setProbability(p);
-    return { probability: this.manualEvent.probability };
-  }
-
   async tick() { return this.engine.tick(); }
   async arm() { return this.engine.arm(); }
-  async chaosShock() {
-    if (this.mode === 'live') throw new Error('chaos shock is a clearly-labeled demo simulation and is disabled in live mode');
-    this.manualEvent.setProbability(0.28);
-    const result = await this.engine.tick();
-    return { simulated: true, label: 'MARKET_SHOCK', fromBps: 7100, toBps: 2800, result };
-  }
   async kill() { return this.engine.kill(); }
   async settle() { return this.engine.settle(); }
   async verify() { return verifyFuse({ fuse: this.engine.snapshot(), receipts: this.receipts }); }
-  replay(probabilitiesBps) { return replayPolicy(this.engine.fuse.policy, probabilitiesBps); }
 }

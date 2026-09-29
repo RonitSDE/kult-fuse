@@ -8,11 +8,10 @@ This is the submission-freeze source. Do not add product features before the pro
 cp .env.example .env
 npm install
 npm test
-npm run simulate
 npm run release:check
 ```
 
-Expected local result: **14/14 PASS** and `RELEASE CHECK PASS`.
+Expected local result: **20/20 PASS** and `RELEASE CHECK PASS` (preflight needs a filled `.env`).
 
 ## 2. Build + test the Fuse program
 
@@ -36,23 +35,17 @@ anchor deploy --provider.cluster devnet
 cd ../..
 ```
 
-Populate `.env` with `FUSE_PROGRAM_ID` and the authority keys. Run:
+Populate `.env` with `FUSE_PROGRAM_ID` and the owner / oracle / execution keys. The server creates its own Fuse account on first boot.
+
+## 4. Polymarket live-data smoke
+
+Set `POLYMARKET_MARKET` to an active market slug, then:
 
 ```bash
-npm run anchor:init
+npm run smoke:polymarket
 ```
 
-Copy the returned Fuse PDA and create tx into `.env`.
-
-## 4. DFlow live-data smoke
-
-Configure `DFLOW_API_KEY` + `DFLOW_MARKET_MINT`, then:
-
-```bash
-npm run smoke:dflow
-```
-
-Use an active market with acceptable spread/depth for the recorded live proof.
+Use a market with a tight spread whose probability sits inside the policy curve.
 
 ## 5. Flash Trade devnet smoke
 
@@ -78,25 +71,22 @@ Required result: **open → resize → close → residual ≈ 0**. Save all sign
 Set:
 
 ```bash
-KULT_FUSE_MODE=live
 PERP_ADAPTER=flash
-FUSE_ONCHAIN=1
-FUSE_PDA=<created PDA>
 FUSE_ADMIN_TOKEN=<strong random token>
 BUILD_TAG=submission-2026-10-09
 BUILD_SHA=<exact git commit>
-PUBLIC_DEMO_URL=https://<your-public-demo>
+PUBLIC_URL=https://<your-public-host>
 ```
 
-Populate all `PROOF_*_TX` fields.
+Optionally pin the Flash smoke signatures in `PROOF_FLASH_*_TX`.
 
 ## 7. Public deploy
 
 Deploy with the provided Dockerfile/compose or Node service. Confirm externally:
 
 ```bash
-curl https://<demo>/healthz
-curl https://<demo>/api/proof
+curl https://<host>/healthz
+curl https://<host>/api/proof
 ```
 
 The frontend must show **DEVNET LIVE** and clickable Chain Proof links.
@@ -111,9 +101,9 @@ git tag submission-2026-10-09
 
 Confirm:
 
-- Judge Demo: `61 → $300 → 72 → $420 → simulated 28 → KILLED/$0 → VERIFIED`
-- Judge Demo is clearly labelled simulation/paper execution.
-- Chain Proof separately shows real Solana + Flash devnet signatures.
+- Operator login → ARM; the worker trades the live market within the mandate.
+- Receipts carry ON-CHAIN links; the verifier passes.
+- Chain Proof shows the program and current Fuse account.
 - `/healthz` shows the exact tag/SHA/network/program/venue.
 - No keys or `.env` are committed.
 - Video is recorded from the tagged public deployment.

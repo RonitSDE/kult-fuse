@@ -1,15 +1,30 @@
 {
   "version": 1,
   "type": "STEP",
-  "eventMarket": "REPLACE_WITH_DFLOW_MARKET_MINT",
+  "eventMarket": "BOUND_AT_RUNTIME",
   "outcomeId": "YES",
   "consequence": "SOL-PERP-LONG",
   "steps": [
-    {"pBps": 3500, "exposureUsd": 100},
-    {"pBps": 5000, "exposureUsd": 200},
-    {"pBps": 6000, "exposureUsd": 300},
-    {"pBps": 7000, "exposureUsd": 420},
-    {"pBps": 8000, "exposureUsd": 500}
+    {
+      "pBps": 3500,
+      "exposureUsd": 100
+    },
+    {
+      "pBps": 5000,
+      "exposureUsd": 200
+    },
+    {
+      "pBps": 6000,
+      "exposureUsd": 300
+    },
+    {
+      "pBps": 7000,
+      "exposureUsd": 420
+    },
+    {
+      "pBps": 8000,
+      "exposureUsd": 500
+    }
   ],
   "killBelowBps": 3500,
   "riskCapUsd": 500,
