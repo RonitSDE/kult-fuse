@@ -42,7 +42,7 @@ export class AnchorFuseClient {
   }
 
   async ensure(){if(!this.program)await this.init();}
-  bn(v){return new this.anchor.BN(String(Math.trunc(v)));}
+  bn(v){return new this.anchor.BN(typeof v==='bigint'?v.toString():String(Math.trunc(v)));}
   reason(name){return REASONS[name]||10;}
 
   async deriveFusePda(ownerPubkey, fuseId){

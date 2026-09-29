@@ -8,6 +8,8 @@ RUN npm install --omit=dev --include=optional --ignore-scripts
 COPY src ./src
 COPY web ./web
 COPY scripts ./scripts
+# Built by `anchor build`; required when FUSE_ONCHAIN=1.
+COPY contracts/fuse-anchor/target/idl ./contracts/fuse-anchor/target/idl
 
 RUN mkdir -p /app/.data && chown -R node:node /app
 USER node

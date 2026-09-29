@@ -5,6 +5,7 @@ import { initialFuse } from '../src/core/state.mjs';
 import { ManualEventSource } from '../src/adapters/event/manual-event.mjs';
 import { PaperPerpAdapter } from '../src/adapters/perp/paper-perp.mjs';
 import { FuseEngine } from '../src/worker/fuse-engine.mjs';
+import { verifyReceiptChain } from '../src/core/receipt.mjs';
 
 function fixture() {
   const policy=defaultDemoPolicy();
@@ -72,4 +73,23 @@ test('manual emergency kill is absorbing and closes exposure', async()=>{
   assert.equal(x.fuse.status,'KILLED');
   assert.equal(x.fuse.lastReasonCode,'EMERGENCY_KILL');
   assert.equal(Math.round((await x.perp.getPosition()).exposureUsd),0);
+});
+
+test('onchain signatures are attached to receipts without breaking the hash chain', async()=>{
+  const policy=defaultDemoPolicy();
+  const fuse=initialFuse({id:'chain',policy,policyHash:policyHash(policy)});
+  const event=new ManualEventSource({initialProbability:.61,spread:.02});
+  const perp=new PaperPerpAdapter({initialPrice:150});
+  const receipts=[]; let n=0;
+  const sig=async()=>`sig${++n}`;
+  const chainHooks={arm:sig,acceptObservation:sig,setTarget:sig,killProbability:sig,killAuthorized:sig,recordFill:sig,settle:sig};
+  const engine=new FuseEngine({fuse,eventSource:event,perpAdapter:perp,appendReceipt:async r=>receipts.push(r),chainHooks});
+  await engine.arm(); await twoTicks(engine);
+  event.setProbability(.30); await engine.tick();
+  assert.equal(fuse.status,'KILLED');
+  assert.deepEqual(fuse.chainTxs.map(t=>t.ix).slice(0,2),['arm_fuse','accept_observation']);
+  assert.ok(fuse.chainTxs.some(t=>t.ix==='trigger_probability_kill'));
+  assert.ok(receipts.length>=2);
+  for(const r of receipts) assert.equal(r.chain.txs.at(-1).ix,'record_fill');
+  assert.equal(verifyReceiptChain(receipts,fuse.policyHash).ok,true);
 });

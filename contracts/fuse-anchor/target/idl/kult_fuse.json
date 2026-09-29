@@ -1,0 +1,1093 @@
+{
+  "address": "C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv",
+  "metadata": {
+    "name": "kult_fuse",
+    "version": "1.0.0",
+    "spec": "0.1.0",
+    "description": "KULT Fuse policy commitment and execution receipt program"
+  },
+  "instructions": [
+    {
+      "name": "accept_observation",
+      "discriminator": [
+        125,
+        101,
+        185,
+        227,
+        114,
+        54,
+        209,
+        9
+      ],
+      "accounts": [
+        {
+          "name": "oracle_authority",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "p_bps",
+          "type": "u16"
+        },
+        {
+          "name": "mark_price",
+          "type": "u64"
+        },
+        {
+          "name": "oracle_sequence",
+          "type": "u64"
+        },
+        {
+          "name": "observed_ts",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "arm_fuse",
+      "discriminator": [
+        120,
+        187,
+        203,
+        27,
+        25,
+        82,
+        48,
+        150
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_fuse",
+      "discriminator": [
+        178,
+        55,
+        143,
+        15,
+        18,
+        223,
+        182,
+        140
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "init_fuse",
+      "discriminator": [
+        18,
+        59,
+        86,
+        236,
+        178,
+        196,
+        84,
+        224
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "fuse",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  117,
+                  115,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "fuse_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "fuse_id",
+          "type": "u64"
+        },
+        {
+          "name": "p",
+          "type": {
+            "defined": {
+              "name": "InitFuseParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "record_fill",
+      "discriminator": [
+        111,
+        238,
+        183,
+        82,
+        73,
+        168,
+        151,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "execution_authority",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "filled_exposure_usd",
+          "type": "i64"
+        },
+        {
+          "name": "position_ref",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "receipt_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "execution_nonce",
+          "type": "u64"
+        },
+        {
+          "name": "reason_code",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "set_target",
+      "docs": [
+        "Verifies the worker's requested target against the committed curve onchain.",
+        "Normal probability-driven changes must match the deterministic curve exactly.",
+        "Explicit risk-reducing reasons may only reduce absolute exposure."
+      ],
+      "discriminator": [
+        101,
+        85,
+        208,
+        178,
+        47,
+        192,
+        36,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "execution_authority",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "target_exposure_usd",
+          "type": "i64"
+        },
+        {
+          "name": "execution_nonce",
+          "type": "u64"
+        },
+        {
+          "name": "reason_code",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "settle_fuse",
+      "discriminator": [
+        197,
+        230,
+        1,
+        116,
+        212,
+        5,
+        119,
+        126
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "trigger_authorized_kill",
+      "discriminator": [
+        255,
+        216,
+        42,
+        4,
+        58,
+        59,
+        200,
+        38
+      ],
+      "accounts": [
+        {
+          "name": "execution_authority",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "reason_code",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "trigger_probability_kill",
+      "discriminator": [
+        136,
+        80,
+        162,
+        238,
+        247,
+        211,
+        163,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "execution_authority",
+          "signer": true,
+          "relations": [
+            "fuse"
+          ]
+        },
+        {
+          "name": "fuse",
+          "writable": true
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "FuseAccount",
+      "discriminator": [
+        122,
+        232,
+        44,
+        49,
+        101,
+        255,
+        188,
+        109
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "FillRecorded",
+      "discriminator": [
+        242,
+        171,
+        105,
+        186,
+        40,
+        32,
+        92,
+        26
+      ]
+    },
+    {
+      "name": "FuseArmed",
+      "discriminator": [
+        72,
+        214,
+        95,
+        54,
+        252,
+        69,
+        163,
+        14
+      ]
+    },
+    {
+      "name": "FuseInitialized",
+      "discriminator": [
+        147,
+        210,
+        35,
+        223,
+        186,
+        246,
+        162,
+        214
+      ]
+    },
+    {
+      "name": "FuseKilled",
+      "discriminator": [
+        175,
+        238,
+        231,
+        247,
+        70,
+        207,
+        50,
+        141
+      ]
+    },
+    {
+      "name": "FuseSettled",
+      "discriminator": [
+        176,
+        194,
+        253,
+        26,
+        228,
+        229,
+        236,
+        127
+      ]
+    },
+    {
+      "name": "ObservationAccepted",
+      "discriminator": [
+        0,
+        4,
+        16,
+        124,
+        212,
+        210,
+        8,
+        229
+      ]
+    },
+    {
+      "name": "PolicyTargetVerified",
+      "discriminator": [
+        204,
+        42,
+        144,
+        88,
+        113,
+        96,
+        195,
+        191
+      ]
+    },
+    {
+      "name": "TargetSet",
+      "discriminator": [
+        225,
+        163,
+        44,
+        82,
+        52,
+        244,
+        44,
+        101
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidState",
+      "msg": "invalid state transition"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidRiskCap",
+      "msg": "risk cap must be positive"
+    },
+    {
+      "code": 6002,
+      "name": "RiskCapExceeded",
+      "msg": "target exceeds hard risk cap"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidProbability",
+      "msg": "probability must be <= 10000 bps"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidOracleAge",
+      "msg": "oracle age configuration invalid"
+    },
+    {
+      "code": 6005,
+      "name": "AlreadyExpired",
+      "msg": "fuse has already expired"
+    },
+    {
+      "code": 6006,
+      "name": "StaleOracle",
+      "msg": "oracle observation is stale"
+    },
+    {
+      "code": 6007,
+      "name": "FutureObservation",
+      "msg": "observation timestamp is in the future"
+    },
+    {
+      "code": 6008,
+      "name": "Replay",
+      "msg": "replayed sequence or nonce"
+    },
+    {
+      "code": 6009,
+      "name": "KilledCanOnlyClose",
+      "msg": "killed fuse can only reduce/close"
+    },
+    {
+      "code": 6010,
+      "name": "ExpiredCanOnlyReduce",
+      "msg": "expired fuse can only reduce/close"
+    },
+    {
+      "code": 6011,
+      "name": "KillConditionNotMet",
+      "msg": "kill condition not met"
+    },
+    {
+      "code": 6012,
+      "name": "ExecutionNonceMismatch",
+      "msg": "execution nonce does not match pending execution"
+    },
+    {
+      "code": 6013,
+      "name": "NonZeroExposure",
+      "msg": "position exposure must be zero"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidCurve",
+      "msg": "invalid committed curve"
+    },
+    {
+      "code": 6015,
+      "name": "PolicyExecutionMismatch",
+      "msg": "submitted target does not match the committed onchain policy"
+    },
+    {
+      "code": 6016,
+      "name": "UnsafeRiskIncrease",
+      "msg": "submitted target increases risk beyond the committed policy"
+    }
+  ],
+  "types": [
+    {
+      "name": "FillRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          },
+          {
+            "name": "filled_exposure_usd",
+            "type": "i64"
+          },
+          {
+            "name": "execution_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "receipt_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "reason_code",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FuseAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse_id",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "execution_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "event_market",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "outcome_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "oracle_kind",
+            "type": "u8"
+          },
+          {
+            "name": "curve_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "curve_version",
+            "type": "u16"
+          },
+          {
+            "name": "step_count",
+            "type": "u8"
+          },
+          {
+            "name": "step_thresholds_bps",
+            "type": {
+              "array": [
+                "u16",
+                5
+              ]
+            }
+          },
+          {
+            "name": "step_exposures_usd",
+            "type": {
+              "array": [
+                "u64",
+                5
+              ]
+            }
+          },
+          {
+            "name": "risk_cap_usd",
+            "type": "u64"
+          },
+          {
+            "name": "max_leverage_bps",
+            "type": "u32"
+          },
+          {
+            "name": "kill_probability_bps",
+            "type": "u16"
+          },
+          {
+            "name": "hysteresis_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_oracle_age_sec",
+            "type": "u32"
+          },
+          {
+            "name": "loss_stop_usd",
+            "type": "u64"
+          },
+          {
+            "name": "expiry_ts",
+            "type": "i64"
+          },
+          {
+            "name": "venue",
+            "type": "u8"
+          },
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "position_ref",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "FuseStatus"
+              }
+            }
+          },
+          {
+            "name": "desired_exposure_usd",
+            "type": "i64"
+          },
+          {
+            "name": "filled_exposure_usd",
+            "type": "i64"
+          },
+          {
+            "name": "last_probability_bps",
+            "type": "u16"
+          },
+          {
+            "name": "last_mark_price",
+            "type": "u64"
+          },
+          {
+            "name": "oracle_sequence",
+            "type": "u64"
+          },
+          {
+            "name": "execution_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "pending_execution_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "pending_target_exposure_usd",
+            "type": "i64"
+          },
+          {
+            "name": "last_update_slot",
+            "type": "u64"
+          },
+          {
+            "name": "last_receipt_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "last_reason_code",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FuseArmed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FuseInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "curve_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "risk_cap_usd",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FuseKilled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          },
+          {
+            "name": "reason_code",
+            "type": "u8"
+          },
+          {
+            "name": "last_probability_bps",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FuseSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FuseStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Proposed"
+          },
+          {
+            "name": "Armed"
+          },
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Reducing"
+          },
+          {
+            "name": "Killed"
+          },
+          {
+            "name": "Settled"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitFuseParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "agent",
+            "type": "pubkey"
+          },
+          {
+            "name": "execution_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "event_market",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "outcome_id",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "oracle_kind",
+            "type": "u8"
+          },
+          {
+            "name": "curve_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "curve_version",
+            "type": "u16"
+          },
+          {
+            "name": "step_count",
+            "type": "u8"
+          },
+          {
+            "name": "step_thresholds_bps",
+            "type": {
+              "array": [
+                "u16",
+                5
+              ]
+            }
+          },
+          {
+            "name": "step_exposures_usd",
+            "type": {
+              "array": [
+                "u64",
+                5
+              ]
+            }
+          },
+          {
+            "name": "risk_cap_usd",
+            "type": "u64"
+          },
+          {
+            "name": "max_leverage_bps",
+            "type": "u32"
+          },
+          {
+            "name": "kill_probability_bps",
+            "type": "u16"
+          },
+          {
+            "name": "hysteresis_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_oracle_age_sec",
+            "type": "u32"
+          },
+          {
+            "name": "loss_stop_usd",
+            "type": "u64"
+          },
+          {
+            "name": "expiry_ts",
+            "type": "i64"
+          },
+          {
+            "name": "venue",
+            "type": "u8"
+          },
+          {
+            "name": "market_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ObservationAccepted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          },
+          {
+            "name": "p_bps",
+            "type": "u16"
+          },
+          {
+            "name": "mark_price",
+            "type": "u64"
+          },
+          {
+            "name": "oracle_sequence",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PolicyTargetVerified",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          },
+          {
+            "name": "probability_bps",
+            "type": "u16"
+          },
+          {
+            "name": "expected_target_usd",
+            "type": "i64"
+          },
+          {
+            "name": "submitted_target_usd",
+            "type": "i64"
+          },
+          {
+            "name": "reason_code",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TargetSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "fuse",
+            "type": "pubkey"
+          },
+          {
+            "name": "target_exposure_usd",
+            "type": "i64"
+          },
+          {
+            "name": "execution_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "reason_code",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
