@@ -27,7 +27,15 @@ export class Runtime {
     this.eventSource = this.mode === 'live'
       ? new DFlowEventSource({ baseUrl: this.env.DFLOW_BASE_URL, apiKey: this.env.DFLOW_API_KEY, marketMint: this.env.DFLOW_MARKET_MINT })
       : this.manualEvent;
+    this.chain = await this.store.read('chain', null);
     this.chainHooks = await this.makeChainHooks();
+    // Each local fuse is bound to its own onchain account; provision one if this fuse has none yet.
+    if (this.chainHooks && (!fuse.chainFuse || fuse.chainFuse !== this.chain?.fusePda)) {
+      fuse = this.newFuse();
+      await this.provisionChainFuse(fuse);
+      this.receipts = [];
+      await this.store.write('receipts', this.receipts);
+    }
     this.bindEngine(fuse);
     await this.persist(fuse);
     return this;
@@ -44,13 +52,20 @@ export class Runtime {
     return initialFuse({ id: `fuse_${crypto.randomBytes(5).toString('hex')}`, policy: next, policyHash: policyHash(next) });
   }
 
+  onchain() { return String(this.env.FUSE_ONCHAIN || '0') === '1'; }
+  activeFusePda() { return this.chain?.fusePda || this.env.FUSE_PDA || null; }
+
   async makeChainHooks() {
-    if (String(this.env.FUSE_ONCHAIN || '0') !== '1') return null;
-    if (!this.env.FUSE_PDA) throw new Error('FUSE_ONCHAIN=1 requires FUSE_PDA');
-    const mk = async (key) => { const c=new AnchorFuseClient({ ...this.env, FUSE_AUTHORITY_PRIVATE_KEY_JSON:key }); await c.init(); return c; };
-    const owner=await mk(this.env.FUSE_OWNER_PRIVATE_KEY_JSON);
-    const oracle=await mk(this.env.FUSE_ORACLE_PRIVATE_KEY_JSON);
-    const exec=await mk(this.env.FUSE_EXECUTION_PRIVATE_KEY_JSON);
+    if (!this.onchain()) return null;
+    const mk = async (key, name) => {
+      if (!key) throw new Error(`FUSE_ONCHAIN=1 requires ${name}`);
+      const c=new AnchorFuseClient({ ...this.env, FUSE_PDA:this.activeFusePda() || '', FUSE_AUTHORITY_PRIVATE_KEY_JSON:key });
+      await c.init(); return c;
+    };
+    const owner=await mk(this.env.FUSE_OWNER_PRIVATE_KEY_JSON, 'FUSE_OWNER_PRIVATE_KEY_JSON');
+    const oracle=await mk(this.env.FUSE_ORACLE_PRIVATE_KEY_JSON, 'FUSE_ORACLE_PRIVATE_KEY_JSON');
+    const exec=await mk(this.env.FUSE_EXECUTION_PRIVATE_KEY_JSON, 'FUSE_EXECUTION_PRIVATE_KEY_JSON');
+    this.chainClients = { owner, oracle, exec };
     return {
       arm:()=>owner.arm(), settle:()=>owner.settle(),
       acceptObservation:(x)=>oracle.acceptObservation(x),
@@ -72,15 +87,39 @@ export class Runtime {
 
   async persist(fuse) { await this.store.write('fuse', fuse); }
 
+  // Creates a fresh onchain Fuse account committed to this fuse's policy and points all authorities at it.
+  async provisionChainFuse(fuse) {
+    const { owner, oracle, exec } = this.chainClients;
+    const { fuse: pda, signature } = await owner.initFuse({
+      fuseId: BigInt(Date.now()),
+      policy: fuse.policy,
+      agent: owner.wallet.publicKey.toBase58(),
+      executionAuthority: exec.wallet.publicKey.toBase58(),
+      oracleAuthority: oracle.wallet.publicKey.toBase58()
+    });
+    const pk = new owner.web3.PublicKey(pda);
+    for (const c of [owner, oracle, exec]) c.fusePda = pk;
+    fuse.chainFuse = pda;
+    fuse.chainTxs = [{ ix: 'init_fuse', signature, at: Date.now() }];
+    this.chain = { fusePda: pda, createTx: signature, createdAt: Date.now() };
+    await this.store.write('chain', this.chain);
+  }
+
   async reset() {
     if (this.mode === 'live') throw new Error('reset is disabled in live mode');
+    const current = this.engine.fuse;
+    // An untouched onchain fuse can be reused as-is; anything else needs a new account.
+    if (this.chainHooks && current.status === 'PROPOSED' && current.chainFuse === this.chain?.fusePda && !this.receipts.length) return this.getState();
+    const cooldownMs = Number(this.env.FUSE_RESET_COOLDOWN_SEC ?? 10) * 1000;
+    if (this.chainHooks && Date.now() - (this.chain?.createdAt || 0) < cooldownMs) throw new Error(`reset cooldown: wait ${Math.ceil((cooldownMs - (Date.now() - this.chain.createdAt)) / 1000)}s`);
+    // Provision first so a failed onchain create leaves the current fuse untouched.
+    const fuse = this.newFuse();
+    if (this.chainHooks) await this.provisionChainFuse(fuse);
     await this.store.remove('fuse');
     await this.store.remove('receipts');
     this.receipts = [];
     this.perp = await makePerpAdapter({ ...this.env, PERP_ADAPTER: 'paper' });
     this.eventSource = this.manualEvent = new ManualEventSource({ initialProbability: 0.61 });
-    const fuse = this.newFuse();
-    this.chainHooks = await this.makeChainHooks();
     this.bindEngine(fuse);
     await this.persist(fuse);
     return this.getState();
@@ -93,7 +132,7 @@ export class Runtime {
 
 
   integrity() {
-    const onchain = String(this.env.FUSE_ONCHAIN || '0') === '1';
+    const onchain = this.onchain();
     const adapter = (this.env.PERP_ADAPTER || 'paper').toLowerCase();
     return {
       onchain,
@@ -101,7 +140,7 @@ export class Runtime {
       perpAdapter: adapter,
       eventSource: this.mode === 'live' ? 'dflow' : 'manual-simulation',
       programId: this.env.FUSE_PROGRAM_ID || null,
-      fusePda: this.env.FUSE_PDA || null,
+      fusePda: this.activeFusePda(),
       buildTag: this.env.BUILD_TAG || 'dev',
       buildSha: this.env.BUILD_SHA || 'DEV_UNSET',
       publicUrl: this.env.PUBLIC_DEMO_URL || null
@@ -116,7 +155,7 @@ export class Runtime {
     return {
       integrity: this.integrity(),
       program: { value: this.env.FUSE_PROGRAM_ID || null, url: link('account', this.env.FUSE_PROGRAM_ID) },
-      fuseAccount: { value: this.env.FUSE_PDA || null, url: link('account', this.env.FUSE_PDA) },
+      fuseAccount: { value: this.activeFusePda(), url: link('account', this.activeFusePda()) },
       transactions: {
         create: { value: this.env.PROOF_CREATE_TX || null, url: link('tx', this.env.PROOF_CREATE_TX) },
         arm: { value: this.env.PROOF_ARM_TX || null, url: link('tx', this.env.PROOF_ARM_TX) },

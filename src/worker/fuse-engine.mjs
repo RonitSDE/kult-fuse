@@ -23,11 +23,23 @@ export class FuseEngine {
     this.busy = false;
     this.chainHooks = chainHooks;
     this.chainWarning = null;
+    this.pendingChainTxs = [];
+  }
+
+  // Runs one onchain commitment and keeps its signature for receipts and explorer links.
+  async chain(ix, fn) {
+    const signature = await fn();
+    if (typeof signature === 'string') {
+      const tx = { ix, signature, at: Date.now() };
+      this.fuse.chainTxs = [...(this.fuse.chainTxs || []), tx].slice(-100);
+      this.pendingChainTxs.push(tx);
+    }
+    return signature;
   }
 
   async arm() {
     if (this.fuse.status !== FuseStatus.PROPOSED) throw new Error('only PROPOSED Fuse can be armed');
-    if (this.chainHooks?.arm) await this.chainHooks.arm();
+    if (this.chainHooks?.arm) await this.chain('arm_fuse', () => this.chainHooks.arm());
     this.fuse.status = FuseStatus.ARMED;
     this.fuse.updatedAt = Date.now();
     await this.persist(this.fuse);
@@ -38,8 +50,8 @@ export class FuseEngine {
     if (this.fuse.status === FuseStatus.SETTLED) throw new Error('settled');
     if (this.chainHooks) {
       try {
-        if (reason === Reason.KILL_PROBABILITY && this.chainHooks.killProbability) await this.chainHooks.killProbability();
-        else if (this.chainHooks.killAuthorized) await this.chainHooks.killAuthorized(reason);
+        if (reason === Reason.KILL_PROBABILITY && this.chainHooks.killProbability) await this.chain('trigger_probability_kill', () => this.chainHooks.killProbability());
+        else if (this.chainHooks.killAuthorized) await this.chain('trigger_authorized_kill', () => this.chainHooks.killAuthorized(reason));
         this.chainWarning = null;
       } catch (e) { this.chainWarning = `kill commitment failed: ${e.message}`; }
     }
@@ -64,7 +76,8 @@ export class FuseEngine {
       if (raw.sequence <= this.fuse.oracleSequence) throw new Error('oracle replay rejected');
       const mark = makeProbabilityMark(raw, this.fuse.policy);
       if (this.chainHooks?.acceptObservation) {
-        await this.chainHooks.acceptObservation({ pBps: mark.pBps, markPrice: Math.round(Number((await this.perp.getPosition()).markPrice || 0) * 1e6), sequence: raw.sequence, observedTs: Math.floor(mark.observedAtMs/1000) });
+        const markPrice = Math.round(Number((await this.perp.getPosition()).markPrice || 0) * 1e6);
+        await this.chain('accept_observation', () => this.chainHooks.acceptObservation({ pBps: mark.pBps, markPrice, sequence: raw.sequence, observedTs: Math.floor(mark.observedAtMs/1000) }));
       }
       this.fuse.oracleSequence = raw.sequence;
       this.fuse.lastProbabilityBps = mark.pBps;
@@ -112,9 +125,9 @@ export class FuseEngine {
       const reducingRisk = Math.abs(proposed) <= Math.abs(Number(actual.exposureUsd || 0)) || proposed === 0;
       if (this.chainHooks) {
         try {
-          if (curve.killed && this.chainHooks.killProbability) await this.chainHooks.killProbability();
-          else if (risk.kill && this.chainHooks.killAuthorized) await this.chainHooks.killAuthorized(this.fuse.lastReasonCode);
-          if (this.chainHooks.setTarget) await this.chainHooks.setTarget({ targetUsd: proposed, nonce: this.fuse.executionNonce, reason: this.fuse.lastReasonCode });
+          if (curve.killed && this.chainHooks.killProbability) await this.chain('trigger_probability_kill', () => this.chainHooks.killProbability());
+          else if (risk.kill && this.chainHooks.killAuthorized) await this.chain('trigger_authorized_kill', () => this.chainHooks.killAuthorized(this.fuse.lastReasonCode));
+          if (this.chainHooks.setTarget) await this.chain('set_target', () => this.chainHooks.setTarget({ targetUsd: proposed, nonce: this.fuse.executionNonce, reason: this.fuse.lastReasonCode }));
           this.chainWarning = null;
         } catch (e) {
           if (!reducingRisk) throw e;
@@ -177,13 +190,16 @@ export class FuseEngine {
     this.fuse.lastReasonCode = receipt.reason;
     if (this.chainHooks?.recordFill) {
       try {
-        await this.chainHooks.recordFill({ filledExposureUsd: this.fuse.filledExposureUsd, venueRef: exec.venueRef || exec.txSignature || '', receiptHash: receipt.hash, nonce, reason: receipt.reason });
+        await this.chain('record_fill', () => this.chainHooks.recordFill({ filledExposureUsd: this.fuse.filledExposureUsd, venueRef: exec.venueRef || exec.txSignature || '', receiptHash: receipt.hash, nonce, reason: receipt.reason }));
         this.chainWarning = null;
       } catch (e) {
         // Never re-execute a venue order merely because receipt anchoring failed. Reconciliation wins.
         this.chainWarning = `receipt anchoring pending: ${e.message}`;
       }
     }
+    // Chain signatures only exist after the receipt is hashed, so they sit outside the hashed body.
+    if (this.pendingChainTxs.length) receipt.chain = { txs: this.pendingChainTxs };
+    this.pendingChainTxs = [];
     await this.appendReceipt(receipt);
     await this.persist(this.fuse);
     return { executed: true, exec, receipt, mark, ...this.snapshot(), position: actual };
@@ -193,7 +209,7 @@ export class FuseEngine {
     const pos = await this.perp.getPosition();
     if (Math.abs(Number(pos.exposureUsd || 0)) >= 0.01) throw new Error('cannot settle with nonzero exposure');
     if (![FuseStatus.KILLED, FuseStatus.ARMED, FuseStatus.OPEN, FuseStatus.REDUCING].includes(this.fuse.status)) throw new Error('invalid settle state');
-    if (this.chainHooks?.settle) await this.chainHooks.settle();
+    if (this.chainHooks?.settle) await this.chain('settle_fuse', () => this.chainHooks.settle());
     this.fuse.status = FuseStatus.SETTLED;
     this.fuse.settledAt = Date.now();
     this.fuse.desiredExposureUsd = 0;

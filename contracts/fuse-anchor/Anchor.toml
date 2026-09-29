@@ -1,15 +1,20 @@
+[toolchain]
+
 [features]
-seeds = false
+resolution = true
 skip-lint = false
 
-[programs.localnet]
-kult_fuse = "Fg6PaFpoGXkYsidMpWxTWqozVBXzUBRrk4GkC8KQQkSy"
-
 [programs.devnet]
-kult_fuse = "Fg6PaFpoGXkYsidMpWxTWqozVBXzUBRrk4GkC8KQQkSy"
+kult_fuse = "C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv"
+
+[programs.localnet]
+kult_fuse = "C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv"
+
+[registry]
+url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

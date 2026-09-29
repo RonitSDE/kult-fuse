@@ -28,7 +28,8 @@ export function verifyReceiptChain(receipts, expectedPolicyHash) {
     const r = receipts[i];
     if (r.prevReceiptHash !== prev) return { ok: false, index: i, error: 'prevReceiptHash mismatch' };
     if (r.policyHash !== expectedPolicyHash) return { ok: false, index: i, error: 'policyHash mismatch' };
-    const { hash, ...body } = r;
+    // `chain` holds onchain signatures added after hashing; it is not part of the committed body.
+    const { hash, chain, ...body } = r;
     if (sha256Hex(body) !== hash) return { ok: false, index: i, error: 'receipt hash mismatch' };
     prev = hash;
   }

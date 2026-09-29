@@ -47,9 +47,24 @@ function renderCurve(fuse) {
   }
 }
 
+function explorerUrl(kind,value){
+  const net=state?.integrity?.network||'devnet';
+  return `https://solscan.io/${kind}/${encodeURIComponent(value)}${net==='mainnet-beta'?'':`?cluster=${encodeURIComponent(net)}`}`;
+}
+
 function receiptTxLink(r){
-  if(!r.txSignature || String(r.txSignature).startsWith('paper_')) return '';
-  return `<a href="https://solscan.io/tx/${encodeURIComponent(r.txSignature)}?cluster=devnet" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`;
+  const links=[];
+  if(r.txSignature && !String(r.txSignature).startsWith('paper_')) links.push(`<a href="${explorerUrl('tx',r.txSignature)}" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`);
+  const anchored=r.chain?.txs?.filter(t=>t.ix==='record_fill').at(-1)||r.chain?.txs?.at(-1);
+  if(anchored) links.push(`<a href="${explorerUrl('tx',anchored.signature)}" target="_blank" rel="noreferrer">ON-CHAIN ↗</a>`);
+  return links.join(' ');
+}
+
+function renderLiveChainProof(f,integrity={}){
+  if(!integrity.onchain) return;
+  if(integrity.fusePda) setProofLink('#proofPda',{value:integrity.fusePda,url:explorerUrl('account',integrity.fusePda)},'NOT DEPLOYED');
+  const kill=(f.chainTxs||[]).filter(t=>t.ix.startsWith('trigger_')).at(-1);
+  if(kill) setProofLink('#proofKillTx',{value:kill.signature,url:explorerUrl('tx',kill.signature)},'PENDING DEVNET');
 }
 
 function renderReceipts(receipts=[]) {
@@ -87,7 +102,7 @@ function renderIntegrity(integrity={}) {
 }
 
 async function loadProof(){
-  try{proofState=await api('/api/proof');setProofLink('#proofProgram',proofState.program,'NOT DEPLOYED');setProofLink('#proofPda',proofState.fuseAccount,'NOT DEPLOYED');setProofLink('#proofKillTx',proofState.transactions?.kill,'PENDING DEVNET');setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen,'PENDING DEVNET');setProofLink('#proofFlashClose',proofState.transactions?.flashClose,'PENDING DEVNET');renderIntegrity(proofState.integrity||{});}catch{}
+  try{proofState=await api('/api/proof');setProofLink('#proofProgram',proofState.program,'NOT DEPLOYED');setProofLink('#proofPda',proofState.fuseAccount,'NOT DEPLOYED');setProofLink('#proofKillTx',proofState.transactions?.kill,'PENDING DEVNET');setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen,'PENDING DEVNET');setProofLink('#proofFlashClose',proofState.transactions?.flashClose,'PENDING DEVNET');renderIntegrity(proofState.integrity||{});if(state)renderLiveChainProof(state.fuse,proofState.integrity);}catch{}
 }
 
 
@@ -127,7 +142,7 @@ function render(s) {
   $('#flowProofText').textContent=receipts.length?`${receipts.length} RECEIPT${receipts.length===1?'':'S'}`:'READY';
   setFlowActive('#flowSignal',true);setFlowActive('#flowPolicy',f.desiredExposureUsd!==0||f.status==='KILLED');setFlowActive('#flowPosition',Math.abs(Number(p.exposureUsd||0))>0||f.status==='KILLED');setFlowActive('#flowProof',receipts.length>0);
   $('#proofKill').textContent=f.status==='KILLED'?'✓':'✓';
-  renderCurve(f);renderReceipts(receipts);
+  renderCurve(f);renderReceipts(receipts);renderLiveChainProof(f,s.integrity);
 }
 
 async function refresh(){const s=await api('/api/state');render(s);return s;}

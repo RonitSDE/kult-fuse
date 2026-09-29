@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-declare_id!("Fg6PaFpoGXkYsidMpWxTWqozVBXzUBRrk4GkC8KQQkSy");
+declare_id!("C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv");
 
 const ZERO_HASH: [u8; 32] = [0u8; 32];
 const MAX_CURVE_STEPS: usize = 5;
@@ -87,8 +87,9 @@ pub mod kult_fuse {
         require!(oracle_sequence > f.oracle_sequence, FuseError::Replay);
         let clock = Clock::get()?;
         require!(observed_ts <= clock.unix_timestamp + 5, FuseError::FutureObservation);
-        let age = clock.unix_timestamp.saturating_sub(observed_ts);
-        require!(age as u32 <= f.max_oracle_age_sec, FuseError::StaleOracle);
+        // Observations up to 5s ahead of the validator clock count as fresh (age 0), not as a wrapped huge age.
+        let age = clock.unix_timestamp.saturating_sub(observed_ts).max(0);
+        require!(age <= f.max_oracle_age_sec as i64, FuseError::StaleOracle);
 
         f.last_probability_bps = p_bps;
         f.last_mark_price = mark_price;

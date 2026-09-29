@@ -5,20 +5,20 @@
   "type": "module",
   "description": "KULT Fuse \u2014 verifiable probability-controlled perpetual execution on Solana",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.9"
   },
   "scripts": {
-    "start": "node src/http/server.mjs",
-    "dev": "node --watch src/http/server.mjs",
+    "start": "node --env-file-if-exists=.env src/http/server.mjs",
+    "dev": "node --env-file-if-exists=.env --watch src/http/server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "simulate": "node scripts/simulate.mjs",
-    "verify": "node scripts/verify.mjs",
-    "smoke:dflow": "node scripts/smoke-dflow.mjs",
-    "smoke:flash": "node scripts/smoke-flash.mjs",
-    "preflight": "node scripts/preflight.mjs",
-    "release:check": "node scripts/release-check.mjs",
-    "anchor:init": "node scripts/init-anchor.mjs",
-    "anchor:local-test": "node scripts/anchor-local-test.mjs"
+    "simulate": "node --env-file-if-exists=.env scripts/simulate.mjs",
+    "verify": "node --env-file-if-exists=.env scripts/verify.mjs",
+    "smoke:dflow": "node --env-file-if-exists=.env scripts/smoke-dflow.mjs",
+    "smoke:flash": "node --env-file-if-exists=.env scripts/smoke-flash.mjs",
+    "preflight": "node --env-file-if-exists=.env scripts/preflight.mjs",
+    "release:check": "node --env-file-if-exists=.env scripts/release-check.mjs",
+    "anchor:init": "node --env-file-if-exists=.env scripts/init-anchor.mjs",
+    "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs"
   },
   "optionalDependencies": {
     "@coral-xyz/anchor": "0.31.1",
