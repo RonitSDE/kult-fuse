@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "KULT Fuse \u2014 verifiable probability-controlled perpetual execution on Solana",
+  "description": "KULT Fuse \u2014 a Solana execution mandate: live prediction-market probability drives a perp position within an onchain-enforced policy",
   "engines": {
     "node": ">=22.9"
   },

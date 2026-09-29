@@ -1,212 +1,130 @@
-# KULT FUSE v1.2 — Submission Freeze
+# KULT Fuse
 
-**Prediction probability → committed policy → bounded perp exposure.**
+**Turn probability into position — within a mandate Solana enforces.**
 
-KULT Fuse is a Solana execution mandate. A prediction-market probability enters a precommitted piecewise policy; the policy determines the permitted SOL-perp exposure; hard caps, expiry, replay protection and an absorbing kill are enforced by the Fuse program; execution is reconciled against the actual venue position; every transition creates a tamper-evident receipt.
+KULT Fuse is a Solana execution mandate. A live prediction-market probability drives a perpetual-futures position, but only inside a policy the user commits onchain before any capital moves: a fixed probability → exposure curve, a hard notional cap, an expiry and an absorbing kill switch. The Fuse program checks every target the execution agent submits against that committed curve, and every fill produces a tamper-evident receipt anchored onchain.
 
 > **The agent proposes. The user authorizes. The policy executes. Solana verifies.**
 
-## Live deployment
+## Links
 
-Everything runs on real data: a live Polymarket order book drives the probability, positions execute on Flash Trade devnet, and every commitment, kill and fill is a Solana devnet transaction against the deployed Fuse program.
+> Fill these in before submitting.
 
-- Public app: `PUBLIC_URL` (health: `PUBLIC_URL/healthz`)
-- Fuse program: `FUSE_PROGRAM_ID`
-- Current Fuse account and its transactions: shown live in the **Chain proof** panel and on every receipt (**ON-CHAIN ↗**)
-- Tagged build: `BUILD_TAG` + `BUILD_SHA`
+| | |
+|---|---|
+| Live app | `TODO: public URL` |
+| Demo video | `TODO: video link` |
+| Fuse program (Solana devnet) | [`C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv`](https://solscan.io/account/C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv?cluster=devnet) |
+| Current Fuse account + transactions | Shown live in the app's **Chain proof** panel; every receipt links to its onchain transactions |
 
-Anyone can watch the dashboard and run the independent verifier. Arming, killing, settling and starting a new mandate need the operator token (`FUSE_ADMIN_TOKEN`, entered via **OPERATOR LOGIN**).
+## The problem
 
-## Local run
+Prediction markets price *what may happen*. Perpetual markets trade *the consequence*. Connecting the two today means handing an agent or bot open-ended trading authority and trusting it to follow the strategy. Nothing stops it from sizing up, ignoring a stop, or reopening after it should have stopped.
 
-Requires Node.js 22.9+ and a filled `.env` (see `.env.example`).
-
-```bash
-cp .env.example .env      # then fill keys, market and token
-npm test
-npm run preflight
-npm run smoke:polymarket
-npm run smoke:flash
-npm start
-```
-
-Open `http://localhost:8787`.
-
-```bash
-curl http://localhost:8787/healthz
-curl http://localhost:8787/api/proof
-```
-
-## Repository
+## How KULT Fuse works
 
 ```text
-contracts/fuse-anchor/     Anchor program
-src/core/                  deterministic policy, risk, receipts, verifier
-src/worker/                reconcile + execute engine
-src/adapters/event/        Polymarket + DFlow prediction sources
-src/adapters/perp/         Flash Trade + generic driver
-src/adapters/store/        file + Anchor clients
-src/http/                  API + static web server
-web/                       live dashboard + operator controls
-scripts/                   smoke, preflight, release checks
-tests/                     deterministic unit/integration tests (+ fixtures)
-docs/                      deploy, threat model, integrations
+Polymarket order book ──▶ probability P ──▶ committed curve E(P) ──▶ Flash Trade SOL-perp
+   (live bid/ask)          (fresh, tight)      (checked onchain)        (reconciled position)
+                                                     │
+                                                     ▼
+                                     Fuse program on Solana devnet
+                              cap · expiry · kill · nonces · receipt head
 ```
 
-## Core policy
+1. **Commit.** The user's policy (curve, cap, kill threshold, expiry) is hashed and written to a Fuse account on Solana before trading starts.
+2. **Observe.** The oracle worker reads the market's live order book and derives a probability from the best bid/ask. Stale or wide-spread quotes can never increase risk.
+3. **Authorize.** When the probability crosses a band, the execution agent submits a new target. The program recomputes the curve onchain and rejects any target that doesn't match or exceeds the cap.
+4. **Execute.** The venue adapter moves the Flash Trade position to the authorized target and reconciles against the venue's actual position.
+5. **Prove.** Each fill creates a hash-chained receipt; its hash and the fill are recorded onchain. Anyone can run the independent verifier against the receipt chain.
 
-The v1 policy is intentionally auditable and **piecewise**, not continuous:
+If the probability falls below the kill threshold, the program moves the Fuse to **KILLED**. That state is absorbing: the only permitted action is closing to zero.
+
+### The committed curve (v1)
 
 | Event probability | Target SOL-perp notional |
 |---:|---:|
-| `<35%` | `$0` + absorbing KILL |
+| `< 35%` | `$0` + absorbing KILL |
 | `35–49.99%` | `$100` |
 | `50–59.99%` | `$200` |
 | `60–69.99%` | `$300` |
 | `70–79.99%` | `$420` |
-| `>=80%` | `$500` hard cap |
+| `≥ 80%` | `$500` hard cap |
 
-Normal band changes require confirmation + hysteresis. Kill bypasses debounce.
+Band changes require two consistent observations plus ±1% hysteresis; kills skip the debounce. The curve lives in [`policy.example.json`](policy.example.json).
 
-## Trust boundary
+## What is enforced where
 
-### Program-enforced
+**Enforced by the Solana program**
 
-- policy commitment / curve parameters
-- `P → E(P)` target validation
+- policy commitment and curve parameters
+- `P → E(P)` target validation (recomputed onchain)
 - hard notional cap
-- lifecycle state machine
-- absorbing KILL
-- expiry: no risk increases
-- oracle sequence replay protection
-- execution nonce replay protection
-- authorized owner/oracle/execution roles
+- lifecycle state machine and absorbing KILL
+- expiry: no risk increases after the market ends
+- oracle-sequence and execution-nonce replay protection
+- separate owner, oracle and execution authorities
 
-### External / attested in v1
+**Trusted / attested in v1**
 
-- prediction venue data itself
-- Flash venue fills
-- offchain transaction construction
-- offchain P&L/loss-stop calculations
+- the prediction-market quote itself
+- Flash Trade fills and offchain transaction construction
+- offchain P&L and loss-stop calculations
 
-The worker cannot submit a policy target larger than the onchain curve permits through the Fuse program. A separately provisioned venue wallet must still be operationally restricted and reconciled; see `docs/THREAT_MODEL.md`.
+The execution agent cannot get a target larger than the committed curve through the program. See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) for the full trust boundary.
 
-## Prediction source: Polymarket
+## Built with
 
-The worker reads the configured Polymarket market's live order book (public Gamma + CLOB APIs, no key), derives a midpoint probability from the chosen outcome's best bid/ask, and rejects stale/wide-spread observations before they may increase risk. A mandate never outlives its market: the policy expiry is capped at the market's end date.
+- **Solana + Anchor 0.31** — the Fuse program ([`contracts/fuse-anchor`](contracts/fuse-anchor))
+- **Polymarket** — live prediction-market data (public Gamma + CLOB APIs); DFlow / Kalshi also supported
+- **Flash Trade** — SOL-perp execution on devnet via `flash-sdk`
+- **Node.js** — worker, API and dashboard (no framework)
 
-```bash
-EVENT_SOURCE=polymarket
-POLYMARKET_MARKET=<slug from polymarket.com/market/<slug>>
-POLYMARKET_OUTCOME=Yes
+## Repository
+
+```text
+contracts/fuse-anchor/     Anchor program (Rust)
+src/core/                  deterministic policy, risk, receipts, verifier
+src/worker/                observe → authorize → execute → prove engine
+src/adapters/event/        Polymarket + DFlow prediction sources
+src/adapters/perp/         Flash Trade + generic venue driver
+src/adapters/store/        file store + Anchor client
+src/http/                  API + static web server
+web/                       live dashboard + operator controls
+scripts/                   smoke tests, preflight, release check
+tests/                     unit/integration tests (+ fixtures)
+docs/                      deploy runbook, API, threat model, integrations
 ```
 
-```bash
-npm run smoke:polymarket
-```
+## Run it
 
-DFlow / Kalshi is also supported with `EVENT_SOURCE=dflow`, `DFLOW_API_KEY` and `DFLOW_MARKET_MINT` (`npm run smoke:dflow`).
-
-## Perp venue: Flash Trade
-
-The submission build uses a Flash Trade adapter behind the stable Fuse `PerpAdapter` interface. The devnet proof path uses Flash's mature `flash-sdk` pool configuration (`devnet.1`) because it provides a documented open / increase / decrease / close lifecycle suitable for chain proof.
-
-Install optional live dependencies:
+Requires Node.js 22.9+, and for the program: Rust, Solana CLI and Anchor 0.31.
 
 ```bash
 npm install
+npm test                    # 20 deterministic tests
+
+cp .env.example .env        # fill keys, market slug and operator token
+npm run preflight           # checks every required setting
+npm run smoke:polymarket    # live quote for the chosen market
+npm run smoke:flash         # read-only Flash devnet connection
+npm start                   # http://localhost:8787
 ```
 
-Configure:
+On first boot the server creates its Fuse account onchain, bound to the policy and market. Open the app, click **OPERATOR LOGIN**, enter `FUSE_ADMIN_TOKEN`, then **ARM FUSE**; the worker then follows the live market. Anyone can watch the dashboard and run the verifier.
 
-```bash
-PERP_ADAPTER=flash
-FLASH_CLUSTER=devnet
-FLASH_POOL=devnet.1
-FLASH_PRIVATE_KEY_JSON='[...]'
-FLASH_TARGET_SYMBOL=SOL
-FLASH_COLLATERAL_SYMBOL=USDC
-FLASH_LEVERAGE_X=1
-```
+Full deployment steps: [`docs/DEPLOY_FINAL.md`](docs/DEPLOY_FINAL.md). HTTP API: [`docs/API.md`](docs/API.md).
 
-Read-only connection test:
-
-```bash
-npm run smoke:flash
-```
-
-Tiny devnet lifecycle:
-
-```bash
-CONFIRM_FLASH_SMOKE=YES \
-FLASH_SMOKE_OPEN_USD=20 \
-FLASH_SMOKE_RESIZE_USD=30 \
-npm run smoke:flash
-```
-
-Expected proof: **open → resize → close → residual exposure ≈ 0**, with the real signatures copied into the proof env fields.
-
-> Do not run mainnet smoke unless intentionally reviewed. Mainnet is blocked unless `CONFIRM_FLASH_MAINNET=YES` is explicitly set.
-
-## Anchor program
-
-The source is under `contracts/fuse-anchor`.
-
-Your deployment environment needs Rust, Solana CLI and Anchor 0.31.x.
+### Deploying the program yourself
 
 ```bash
 cd contracts/fuse-anchor
 anchor keys sync
 anchor build
-anchor test
+anchor test                 # init → arm → 61%/$300 → 28%/KILLED → $0, reopen rejected
 anchor deploy --provider.cluster devnet
 ```
 
-The included `anchor test` runs a local integration smoke covering `init → arm → 61%/$300 → 28%/KILLED → $0` and asserts a killed Fuse cannot reopen.
-
-Then set `FUSE_PROGRAM_ID` and the owner / oracle / execution keys. The server creates its own Fuse account on first boot (committed to the live policy and market) and a new one for each new mandate; see `docs/DEPLOY_FINAL.md`.
-
-## API
-
-Public:
-
-- `GET /healthz`
-- `GET /api/state`
-- `GET /api/proof`
-- `POST /api/verify` — independent policy/receipt verifier
-
-Operator (require `Authorization: Bearer <FUSE_ADMIN_TOKEN>`):
-
-- `POST /api/arm`
-- `POST /api/tick` — poll the market now (the worker also polls continuously)
-- `POST /api/kill`
-- `POST /api/settle`
-- `POST /api/fuse/new` — start the next mandate after a kill/settle
-
-## Production deployment gate
-
-Before submission, run:
-
-```bash
-npm test
-npm run release:check
-```
-
-Then complete the external proof checklist:
-
-1. Anchor build/test passes.
-2. Fuse program deployed to Solana devnet.
-3. Server boots, creates its Fuse account, and the operator arms it.
-4. Live market moves drive real target changes, fills and receipts.
-5. Flash devnet `$20 → $30 → $0` lifecycle passes.
-6. Public URL and `/healthz` are continuously reachable.
-7. Optional pinned proof txs are populated in `.env`.
-8. Final commit is tagged and `BUILD_SHA` matches that commit.
-9. Record the video from that exact deployment.
-
 ## Security status
 
-This is a **submission-ready deployment candidate**, not an audited real-money protocol. Mainnet deployment requires independent smart-contract review, key-management hardening, venue/session-authority review, monitoring, incident procedures and jurisdiction-specific legal review.
-
-See `docs/THREAT_MODEL.md` and `docs/DEPLOY_FINAL.md`.
-# kult-fuse
+A hackathon build running on devnet, not an audited protocol. A mainnet deployment would need an independent program audit, hardened key management (KMS/HSM), venue-authority review, monitoring and legal review. See [`docs/PRODUCTION.md`](docs/PRODUCTION.md) and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
