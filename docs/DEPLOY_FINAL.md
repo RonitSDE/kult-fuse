@@ -97,9 +97,18 @@ Open the app, click **OPERATOR LOGIN**, enter `FUSE_ADMIN_TOKEN`, then **ARM FUS
 
 ## 7. Public hosting
 
-Build the provided Docker image or run Node directly. Put TLS/reverse proxy in front of the service. Keep `.env` and wallet keys outside the image. The `.data` volume holds the current Fuse binding and receipts; keep it persistent.
+Build the provided Docker image or run Node directly. Put TLS/reverse proxy in front of the service. Keep `.env` and wallet keys outside the image. The `.data` volume holds the current Fuse binding and receipts; keep it persistent. If that directory is empty on boot and Flash still has a position, the server refuses to create a new mandate.
 
 Health check path: `/healthz`.
+
+### Render
+
+`render.yaml` is a starter web service (Node 22.14) with a 1 GB disk mounted at `/var/data`. A free instance cannot keep that disk and will sleep, which stops the worker.
+
+1. Push this repo to GitHub.
+2. In Render: **New** → **Blueprint**, select the repo, and fill every `sync: false` variable (market slug, three Fuse keys, Flash key, `BUILD_SHA`, `PUBLIC_URL`). `FUSE_ADMIN_TOKEN` is generated; copy it from the service environment to sign in as operator.
+3. After the first deploy, set `PUBLIC_URL` to the `https://….onrender.com` address and `BUILD_SHA` to `git rev-parse HEAD`, then redeploy.
+4. Confirm `https://<service>.onrender.com/healthz` returns `"onchain": true` and the configured market.
 
 ## 8. Final release gate
 

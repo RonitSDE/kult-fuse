@@ -12,6 +12,23 @@ import { AnchorFuseClient } from '../adapters/store/anchor-fuse-client.mjs';
 
 const TERMINAL = ['KILLED', 'SETTLED'];
 
+// Live chain and venue signatures win. Pinned PROOF_* env values are only a fallback
+// for a process whose local receipt log has not yet recorded that transaction.
+export function proofTransactions({ env = {}, chain = null, fuse = null, receipts = [] } = {}) {
+  const txs = fuse?.chainTxs || [];
+  const lastIx = (pred) => [...txs].reverse().find(pred)?.signature || null;
+  const lastReceipt = (pred) => [...receipts].reverse().find((r) => pred(r) && r.txSignature)?.txSignature || null;
+  const pick = (live, pinned) => live || pinned || null;
+  return {
+    create: pick(chain?.createTx || lastIx((t) => t.ix === 'init_fuse'), env.PROOF_CREATE_TX),
+    arm: pick(lastIx((t) => t.ix === 'arm_fuse'), env.PROOF_ARM_TX),
+    kill: pick(lastIx((t) => String(t.ix || '').startsWith('trigger_')), env.PROOF_KILL_TX),
+    flashOpen: pick(lastReceipt((r) => r.reason === 'INITIAL_OPEN'), env.PROOF_FLASH_OPEN_TX),
+    flashResize: pick(lastReceipt((r) => r.reason === 'PROBABILITY_STEP_UP' || r.reason === 'PROBABILITY_STEP_DOWN'), env.PROOF_FLASH_RESIZE_TX),
+    flashClose: pick(lastReceipt((r) => r.reason === 'KILL_PROBABILITY' || r.reason === 'EMERGENCY_KILL'), env.PROOF_FLASH_CLOSE_TX)
+  };
+}
+
 export class Runtime {
   constructor(env = process.env) {
     this.env = env;
@@ -31,8 +48,13 @@ export class Runtime {
     let fuse = await this.store.read('fuse');
     // Each local fuse is bound to one onchain account and one market; start a new mandate if either changed.
     if (!fuse || fuse.chainFuse !== this.chain?.fusePda || fuse.policy.eventMarket !== this.market.id) {
-      if (fuse && !TERMINAL.includes(fuse.status) && Math.abs(Number(fuse.filledExposureUsd || 0)) >= 0.01) {
-        throw new Error(`fuse ${fuse.id} on ${fuse.policy.eventMarket} still holds ${fuse.filledExposureUsd} USD exposure; kill or settle it before switching market`);
+      const position = await this.perp.getPosition();
+      const venueUsd = Number(position.exposureUsd || 0);
+      const localUsd = Number(fuse?.filledExposureUsd || 0);
+      const localOpen = fuse && !TERMINAL.includes(fuse.status) && Math.abs(localUsd) >= 0.01;
+      if (localOpen || Math.abs(venueUsd) >= 0.01) {
+        const who = fuse ? `fuse ${fuse.id} on ${fuse.policy.eventMarket}` : 'no local fuse (DATA_DIR is empty)';
+        throw new Error(`${who} still has venue exposure ${venueUsd} USD; restore the data disk or close the Flash position before starting a new mandate`);
       }
       fuse = this.newFuse();
       await this.provisionChainFuse(fuse);
@@ -179,17 +201,19 @@ export class Runtime {
     const suffix = cluster === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(cluster)}`;
     const base = this.env.SOLSCAN_BASE_URL || 'https://solscan.io';
     const link = (kind, value) => value ? `${base}/${kind}/${value}${suffix}` : null;
+    const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: this.receipts });
+    const tx = (value) => ({ value: value || null, url: link('tx', value) });
     return {
       integrity: this.integrity(),
       program: { value: this.env.FUSE_PROGRAM_ID || null, url: link('account', this.env.FUSE_PROGRAM_ID) },
       fuseAccount: { value: this.activeFusePda(), url: link('account', this.activeFusePda()) },
       transactions: {
-        create: { value: this.env.PROOF_CREATE_TX || null, url: link('tx', this.env.PROOF_CREATE_TX) },
-        arm: { value: this.env.PROOF_ARM_TX || null, url: link('tx', this.env.PROOF_ARM_TX) },
-        kill: { value: this.env.PROOF_KILL_TX || null, url: link('tx', this.env.PROOF_KILL_TX) },
-        flashOpen: { value: this.env.PROOF_FLASH_OPEN_TX || null, url: link('tx', this.env.PROOF_FLASH_OPEN_TX) },
-        flashResize: { value: this.env.PROOF_FLASH_RESIZE_TX || null, url: link('tx', this.env.PROOF_FLASH_RESIZE_TX) },
-        flashClose: { value: this.env.PROOF_FLASH_CLOSE_TX || null, url: link('tx', this.env.PROOF_FLASH_CLOSE_TX) }
+        create: tx(txs.create),
+        arm: tx(txs.arm),
+        kill: tx(txs.kill),
+        flashOpen: tx(txs.flashOpen),
+        flashResize: tx(txs.flashResize),
+        flashClose: tx(txs.flashClose)
       }
     };
   }

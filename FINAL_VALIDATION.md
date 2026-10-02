@@ -5,7 +5,7 @@ Validated: 2026-09-29
 ## Release status
 
 - Node source syntax checks: **PASS**
-- Automated test suite: **20/20 PASS**
+- Automated test suite: **22/22 PASS**
 - Release check: **PASS**
 - Fuse program deployed to Solana devnet: `C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv`
 - Live server against the devnet program (local market/venue stand-ins): arm → $300 → $420 → onchain kill → $0 → verifier PASS → new mandate

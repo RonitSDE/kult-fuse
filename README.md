@@ -102,7 +102,7 @@ Requires Node.js 22.9+, and for the program: Rust, Solana CLI and Anchor 0.31.
 
 ```bash
 npm install
-npm test                    # 20 deterministic tests
+npm test                    # 22 deterministic tests
 
 cp .env.example .env        # fill keys, market slug and operator token
 npm run preflight           # checks every required setting

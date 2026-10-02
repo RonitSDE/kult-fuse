@@ -109,7 +109,7 @@ function renderIntegrity(integrity={}) {
 }
 
 async function loadProof(){
-  try{proofState=await api('/api/proof');setProofLink('#proofProgram',proofState.program,'NOT DEPLOYED');setProofLink('#proofPda',proofState.fuseAccount,'NOT DEPLOYED');setProofLink('#proofKillTx',proofState.transactions?.kill,'PENDING DEVNET');setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen,'PENDING DEVNET');setProofLink('#proofFlashClose',proofState.transactions?.flashClose,'PENDING DEVNET');renderIntegrity(proofState.integrity||{});if(state)renderLiveChainProof(state.fuse,proofState.integrity);}catch{}
+  try{proofState=await api('/api/proof');setProofLink('#proofProgram',proofState.program,'NOT DEPLOYED');setProofLink('#proofPda',proofState.fuseAccount,'NOT DEPLOYED');setProofLink('#proofKillTx',proofState.transactions?.kill,'PENDING DEVNET');setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen,'PENDING DEVNET');setProofLink('#proofFlashResize',proofState.transactions?.flashResize,'PENDING DEVNET');setProofLink('#proofFlashClose',proofState.transactions?.flashClose,'PENDING DEVNET');renderIntegrity(proofState.integrity||{});if(state)renderLiveChainProof(state.fuse,proofState.integrity);}catch{}
 }
 
 
