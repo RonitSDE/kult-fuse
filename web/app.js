@@ -8,7 +8,18 @@ const pct = (x, d=1) => Number(x || 0).toFixed(d) + '%';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let state = null;
 let proofState = null;
+let proofFailed = false;
 let toastTimer = null;
+let replayMode = false;
+let replayTimer = null;
+const REPLAY_STEPS = [
+  { p: 52, requested: null, kind: 'open', title: 'Open inside the 50% band' },
+  { p: 64, requested: null, kind: 'resize', title: 'Step up inside the 60% band' },
+  { p: 74, requested: null, kind: 'resize', title: 'Step up inside the 70% band' },
+  { p: 29, requested: 0, kind: 'kill', title: 'Probability falls through the kill threshold' },
+  { p: 29, requested: 0, kind: 'closed', title: 'Position closed. Mandate locked.' },
+  { p: 80, requested: 500, kind: 'rejected', title: 'Agent requests $500 after the kill' }
+];
 
 const TOKEN_KEY='kultFuseOperatorToken';
 function operatorToken(){try{return sessionStorage.getItem(TOKEN_KEY)||''}catch{return ''}}
@@ -40,17 +51,35 @@ function rawTarget(policy,pBps){
   let target=0; for(const s of policy.steps){if(pBps>=s.pBps) target=s.exposureUsd; else break;} return Math.min(target,policy.riskCapUsd);
 }
 
-function renderCurve(fuse) {
-  const el=$('#curve'); el.innerHTML='';
-  const current=fuse.desiredExposureUsd;
-  for (const s of fuse.policy.steps) {
-    const active=current===s.exposureUsd;
+function renderCurve(fuse, pBps, force) {
+  const el=$('#curve'); if(!el) return; el.innerHTML='';
+  const policy=fuse.policy;
+  const probability=pBps==null?currentProbability(fuse):pBps/100;
+  const bps=pBps==null?(probability==null?null:Math.round(probability*100)):pBps;
+  const killed=Boolean(force?.killed) || (bps!=null && bps<policy.killBelowBps);
+  const permitted=force && Object.hasOwn(force,'permitted') ? force.permitted : (bps==null?fuse.desiredExposureUsd:(killed?0:rawTarget(policy,bps)));
+  const kill=document.createElement('div');
+  kill.className=`curve-step kill-step ${killed?'active':''}`;
+  kill.style.setProperty('--h','8%');
+  kill.innerHTML=`<span>&lt; ${(policy.killBelowBps/100).toFixed(0)}% probability</span><b>KILL · $0</b>`;
+  el.appendChild(kill);
+  for (const s of policy.steps) {
+    const active=!killed && permitted===s.exposureUsd && bps!=null && bps>=s.pBps;
     const d=document.createElement('div'); d.className=`curve-step ${active?'active':''}`;
-    const h=Math.max(8,Math.round(s.exposureUsd/fuse.policy.riskCapUsd*100));
+    const h=Math.max(12,Math.round(s.exposureUsd/policy.riskCapUsd*100));
     d.style.setProperty('--h',`${h}%`);
-    d.innerHTML=`<span>≥ ${(s.pBps/100).toFixed(0)}% probability</span><b>${money(s.exposureUsd)}</b>`;
+    d.innerHTML=`<span>≥ ${(s.pBps/100).toFixed(0)}%</span><b>${money(s.exposureUsd)}</b>`;
     el.appendChild(d);
   }
+  if($('#curveNowP')) $('#curveNowP').textContent=bps==null?'—':pct(bps/100);
+  if($('#curveNowE')) $('#curveNowE').textContent=bps==null?'—':money(permitted,0);
+  const needle=$('#curveNeedle');
+  if(needle && bps!=null){ needle.style.left=`${Math.max(0,Math.min(100,bps/100))}%`; }
+  if($('#curveNeedleLabel') && bps!=null){
+    $('#curveNeedleLabel').textContent=pct(bps/100);
+    $('#curveNeedleLabel').style.left=`${Math.max(2,Math.min(92,bps/100))}%`;
+  }
+  return { bps, permitted, killed };
 }
 
 function explorerUrl(kind,value){
@@ -68,9 +97,9 @@ function receiptTxLink(r){
 
 function renderLiveChainProof(f,integrity={}){
   if(!integrity.onchain) return;
-  if(integrity.fusePda) setProofLink('#proofPda',{value:integrity.fusePda,url:explorerUrl('account',integrity.fusePda)},'NOT DEPLOYED');
+  if(integrity.fusePda) setProofLink('#proofPda',{value:integrity.fusePda,url:explorerUrl('account',integrity.fusePda)});
   const kill=(f.chainTxs||[]).filter(t=>t.ix.startsWith('trigger_')).at(-1);
-  if(kill) setProofLink('#proofKillTx',{value:kill.signature,url:explorerUrl('tx',kill.signature)},'PENDING DEVNET');
+  if(kill) setProofLink('#proofKillTx',{value:kill.signature,url:explorerUrl('tx',kill.signature)});
 }
 
 function renderReceipts(receipts=[]) {
@@ -91,10 +120,47 @@ function renderReceipts(receipts=[]) {
 
 function setFlowActive(id,on=true){$(id)?.classList.toggle('active',on)}
 
-function setProofLink(selector, item, fallback) {
+function setProofLink(selector, item) {
   const el=$(selector); if(!el) return;
-  if(item?.value && item?.url){el.textContent=short(item.value);el.href=item.url;el.classList.add('proof-live');}
-  else {el.textContent=fallback;el.removeAttribute('href');el.classList.remove('proof-live');}
+  el.classList.remove('proof-live','proof-loading','proof-missing');
+  if(!proofState && !proofFailed){
+    el.textContent='Fetching Solana proof…'; el.classList.add('proof-loading'); el.removeAttribute('href'); return;
+  }
+  if(proofFailed){
+    el.textContent='Proof request failed'; el.classList.add('proof-missing'); el.removeAttribute('href'); return;
+  }
+  if(item?.value && item?.url){el.textContent=short(item.value);el.href=item.url;el.classList.add('proof-live'); return;}
+  el.textContent='No transaction on this mandate yet'; el.classList.add('proof-missing'); el.removeAttribute('href');
+}
+
+function txForKind(kind){
+  const txs=proofState?.transactions||{};
+  if(kind==='open') return txs.flashOpen;
+  if(kind==='resize') return txs.flashResize;
+  if(kind==='kill'||kind==='rejected') return txs.kill;
+  if(kind==='closed') return txs.flashClose;
+  return null;
+}
+
+function showFeatured({prob,permitted,requested,actual,cap,nonce,hash,hashLabel,tx,verdict,raw}){
+  $('#rfProb').textContent=prob;
+  $('#rfPermitted').textContent=permitted;
+  $('#rfRequested').textContent=requested;
+  $('#rfActual').textContent=actual;
+  $('#rfCap').textContent=cap;
+  $('#rfNonce').textContent=nonce;
+  $('#rfHashLabel').textContent=hashLabel||'RECEIPT HASH';
+  $('#rfHash').textContent=hash||'—';
+  const verdictEl=$('#receiptVerdict');
+  verdictEl.textContent=verdict;
+  verdictEl.className=`receipt-verdict ${verdict==='REJECTED'?'bad':verdict==='PASS'?'good':''}`;
+  const link=$('#rfTx');
+  link.classList.remove('proof-live','proof-loading','proof-missing');
+  if(tx?.value && tx?.url){ link.textContent=short(tx.value); link.href=tx.url; link.classList.add('proof-live'); }
+  else if(!proofState && !proofFailed){ link.textContent='Fetching Solana proof…'; link.removeAttribute('href'); link.classList.add('proof-loading'); }
+  else if(proofFailed){ link.textContent='Proof request failed'; link.removeAttribute('href'); link.classList.add('proof-missing'); }
+  else { link.textContent='No transaction on this mandate yet'; link.removeAttribute('href'); link.classList.add('proof-missing'); }
+  $('#rfRaw').textContent=raw||'No raw receipt yet.';
 }
 
 function renderIntegrity(integrity={}) {
@@ -109,7 +175,21 @@ function renderIntegrity(integrity={}) {
 }
 
 async function loadProof(){
-  try{proofState=await api('/api/proof');setProofLink('#proofProgram',proofState.program,'NOT DEPLOYED');setProofLink('#proofPda',proofState.fuseAccount,'NOT DEPLOYED');setProofLink('#proofKillTx',proofState.transactions?.kill,'PENDING DEVNET');setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen,'PENDING DEVNET');setProofLink('#proofFlashResize',proofState.transactions?.flashResize,'PENDING DEVNET');setProofLink('#proofFlashClose',proofState.transactions?.flashClose,'PENDING DEVNET');renderIntegrity(proofState.integrity||{});if(state)renderLiveChainProof(state.fuse,proofState.integrity);}catch{}
+  try{
+    proofFailed=false;
+    proofState=await api('/api/proof');
+    setProofLink('#proofProgram',proofState.program);
+    setProofLink('#proofPda',proofState.fuseAccount);
+    setProofLink('#proofKillTx',proofState.transactions?.kill);
+    setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen);
+    setProofLink('#proofFlashResize',proofState.transactions?.flashResize);
+    setProofLink('#proofFlashClose',proofState.transactions?.flashClose);
+    renderIntegrity(proofState.integrity||{});
+    if(state && !replayMode) renderLiveChainProof(state.fuse,proofState.integrity);
+  }catch{
+    proofFailed=true;
+    for (const id of ['#proofProgram','#proofPda','#proofKillTx','#proofFlashOpen','#proofFlashResize','#proofFlashClose']) setProofLink(id,null);
+  }
 }
 
 
@@ -127,7 +207,7 @@ function render(s) {
   $('#cap').textContent=money(f.policy.riskCapUsd); $('#capHero').textContent=money(f.policy.riskCapUsd);
   $('#kill').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`; $('#killHero').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`;
   $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—'; $('#pnl').textContent=money(p.unrealizedPnlUsd||0,2);
-  $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.lastReceiptHash);
+  $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.policyHash);
   $('#expectedTarget').textContent=money(f.status==='KILLED'||pDisplay==null?0:rawTarget(f.policy,Math.round(pDisplay*100)));
   $('#policyResult').textContent=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'WITHIN MANDATE':'VIOLATION';
   $('#policyResult').className=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'green':'';
@@ -138,7 +218,7 @@ function render(s) {
   $('#emergencyKillBtn').disabled=!op||['PROPOSED','KILLED','SETTLED'].includes(f.status);
   $('#settleBtn').disabled=!op||!['KILLED','ARMED','OPEN','REDUCING'].includes(f.status);
   $('#newFuseBtn').disabled=!op||!['KILLED','SETTLED'].includes(f.status);
-  $('#operatorBtn').textContent=op?'OPERATOR ✓':'OPERATOR LOGIN';
+  $('#operatorBtn').textContent=op?'Operator · signed in':'Operator';
 
   if(sig){
     $('#bid').textContent=pct(sig.bid*100); $('#ask').textContent=pct(sig.ask*100); $('#spread').textContent=`${sig.spreadBps} bps`; $('#sequence').textContent=f.oracleSequence;
@@ -151,10 +231,116 @@ function render(s) {
   $('#flowProofText').textContent=receipts.length?`${receipts.length} RECEIPT${receipts.length===1?'':'S'}`:'READY';
   setFlowActive('#flowSignal',true);setFlowActive('#flowPolicy',f.desiredExposureUsd!==0||f.status==='KILLED');setFlowActive('#flowPosition',Math.abs(Number(p.exposureUsd||0))>0||f.status==='KILLED');setFlowActive('#flowProof',receipts.length>0);
   $('#proofKill').textContent=f.status==='KILLED'?'✓':'✓';
-  renderCurve(f);renderReceipts(receipts);renderLiveChainProof(f,s.integrity);
+  const curve=renderCurve(f);
+  const latest=receipts.at(-1);
+  if(!replayMode){
+    const marketName=s.market?.question||'Bitcoin probability';
+    $('#heroExample').textContent=`${marketName} moving from 52% to 71% raises the permitted SOL-perp exposure from $200 to $420. That size is the committed curve, not an agent choice. Under 35% the mandate is killed and cannot be reopened.`;
+    $('#heroMarket').textContent=s.market?.question?`Committed market · ${s.market.question}`:'Committed market loading…';
+    if(latest){
+      showFeatured({
+        prob:pct(latest.observedProbabilityBps/100),
+        permitted:money(latest.desiredExposureAfterUsd),
+        requested:money(latest.desiredExposureAfterUsd),
+        actual:money(latest.filledExposureAfterUsd),
+        cap:money(f.policy.riskCapUsd),
+        nonce:String(latest.sequence),
+        hash:latest.hash,
+        tx:latest.txSignature?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature)}:(latest.chain?.txs?.at(-1)?{value:latest.chain.txs.at(-1).signature,url:explorerUrl('tx',latest.chain.txs.at(-1).signature)}:txForKind(latest.reason==='KILL_PROBABILITY'||latest.reason==='EMERGENCY_KILL'?'kill':'open')),
+        verdict:'PASS',
+        raw:JSON.stringify(latest,null,2)
+      });
+    }else if(curve){
+      showFeatured({
+        prob:curve.bps==null?'—':pct(curve.bps/100),
+        permitted:money(curve.permitted),
+        requested:money(curve.permitted),
+        actual:money(p.exposureUsd),
+        cap:money(f.policy.riskCapUsd),
+        nonce:f.executionNonce?String(f.executionNonce):'—',
+        hash:f.lastReceiptHash||f.policyHash,
+        hashLabel:f.lastReceiptHash?'RECEIPT HASH':'POLICY HASH',
+        tx:null,
+        verdict:curve.bps==null?'WAITING':'PASS',
+        raw:f.lastReceiptHash?`policy ${f.policyHash}\nreceipt head ${f.lastReceiptHash}`:`policy ${f.policyHash}`
+      });
+    }
+  }
+  renderReceipts(receipts);renderLiveChainProof(f,s.integrity);
 }
 
-async function refresh(){const s=await api('/api/state');render(s);return s;}
+function applyReplayStep(step,index){
+  const f=state.fuse;
+  const bps=Math.round(step.p*100);
+  const killed=step.kind==='kill'||step.kind==='closed'||step.kind==='rejected';
+  const permitted=killed?0:rawTarget(f.policy,bps);
+  const requested=step.requested==null?permitted:step.requested;
+  const actual=step.kind==='rejected'||step.kind==='closed'||step.kind==='kill'?0:permitted;
+  const rejected=step.kind==='rejected'||(requested>permitted);
+  renderCurve(f,bps,killed?{killed:true,permitted:0}:undefined);
+  $('#curveMode').textContent=`REPLAY ${index+1}/${REPLAY_STEPS.length}`;
+  $('#curveNote').textContent=step.title;
+  $('#probability').textContent=pct(step.p);
+  $('#flowP').textContent=pct(step.p);
+  $('#probDial').style.setProperty('--p',step.p);
+  $('#target').textContent=money(permitted);
+  $('#flowTarget').textContent=money(permitted);
+  $('#filled').textContent=money(actual);
+  $('#flowFilled').textContent=money(actual);
+  $('#expectedTarget').textContent=money(permitted);
+  $('#policyResult').textContent=rejected?'REJECTED':'PASS';
+  $('#policyResult').className=rejected?'':'green';
+  $('#statusBadge').textContent=step.kind==='rejected'?'REJECTED':killed?'KILLED':'OPEN';
+  $('#statusBadge').className=`status-pill ${killed?'killed':'open'}`;
+  const killEl=$('#killMoment');
+  killEl.classList.toggle('hidden',!killed);
+  $('#killMomentTitle').textContent=step.kind==='rejected'
+    ?'KILLED → position closed → mandate permanently locked.'
+    :'KILLED → position closed → mandate permanently locked.';
+  $('#rejectLine').classList.toggle('hidden',step.kind!=='rejected');
+  const tx=txForKind(step.kind);
+  showFeatured({
+    prob:pct(step.p),
+    permitted:money(permitted,0),
+    requested:money(requested,0),
+    actual:money(actual,0),
+    cap:money(f.policy.riskCapUsd,0),
+    nonce:String(index+1),
+    hash:f.policyHash,
+    hashLabel:'POLICY HASH',
+    tx,
+    verdict:rejected?'REJECTED':'PASS',
+    raw:JSON.stringify({step:index+1,probability:step.p,permittedUsd:permitted,requestedUsd:requested,actualUsd:actual,riskCapUsd:f.policy.riskCapUsd,policyHash:f.policyHash,solana:tx?.value||null,verdict:rejected?'REJECTED':'PASS'},null,2)
+  });
+  $('#featuredReceipt').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function stopReplay(){
+  replayMode=false;
+  clearInterval(replayTimer);
+  replayTimer=null;
+  $('#killMoment')?.classList.add('hidden');
+  $('#curveMode').textContent='LIVE POLICY';
+  $('#curveNote').textContent='The marker sits on the committed curve. Exposure is the step the program will accept, not a size the agent picks.';
+  $('#replayBtn').textContent='REPLAY VERIFIED RUN';
+  if(state) render(state);
+}
+
+function startReplay(){
+  if(!state?.fuse?.policy){toast('Waiting for the committed policy','bad');return;}
+  replayMode=true;
+  let i=0;
+  $('#replayBtn').textContent='REPLAYING…';
+  applyReplayStep(REPLAY_STEPS[0],0);
+  clearInterval(replayTimer);
+  replayTimer=setInterval(()=>{
+    i+=1;
+    if(i>=REPLAY_STEPS.length){clearInterval(replayTimer);replayTimer=null;$('#replayBtn').textContent='REPLAY VERIFIED RUN';return;}
+    applyReplayStep(REPLAY_STEPS[i],i);
+  },1600);
+}
+
+async function refresh(){const s=await api('/api/state');state=s;if(!replayMode)render(s);return s;}
 async function mutate(path,body,{quiet=false}={}){try{const out=await api(path,body);await refresh();if(!quiet)toast('State updated');return out}catch(e){toast(e.message,'bad');throw e}}
 
 function renderMarket(m){
@@ -191,7 +377,9 @@ $('#emergencyKillBtn').onclick=()=>mutate('/api/kill',{}).then(()=>toast('Emerge
 $('#settleBtn').onclick=()=>mutate('/api/settle',{}).then(()=>toast('Fuse settled'));
 $('#newFuseBtn').onclick=async()=>{await mutate('/api/fuse/new',{}, {quiet:true});$('#verifySection').classList.add('hidden');await loadProof();toast('New mandate created on-chain')};
 $('#operatorBtn').onclick=operatorLogin;
-$('#verifyBtn').onclick=runVerifier;$('#verifyBtn2').onclick=runVerifier;$('#closeVerify').onclick=()=>$('#verifySection').classList.add('hidden');
+$('#watchLiveBtn').onclick=()=>stopReplay();
+$('#replayBtn').onclick=()=>{if(replayTimer)stopReplay();else startReplay();};
+$('#verifyBtn2').onclick=runVerifier;$('#closeVerify').onclick=()=>$('#verifySection').classList.add('hidden');
 
 Promise.all([refresh(),loadProof()]).catch(e=>toast(e.message,'bad'));
 // The server worker trades continuously; keep the dashboard in step with it.

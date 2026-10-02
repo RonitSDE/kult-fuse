@@ -20,19 +20,20 @@
       <div class="top-actions">
         <span class="network-pill"><i></i><span id="networkLabel">DEVNET</span></span>
         <span id="statusBadge" class="status-pill">LOADING</span>
-        <button id="operatorBtn" class="btn ghost compact">OPERATOR LOGIN</button>
+        <button id="operatorBtn" class="operator-link">Operator</button>
       </div>
     </header>
 
     <section class="hero">
       <div class="hero-copy">
-        <p class="kicker">EVENT → PROBABILITY → POLICY → CONSEQUENCE</p>
-        <h1>Probability becomes<br/><span>executable state.</span></h1>
-        <p class="hero-sub">A user-authorized Solana policy maps prediction-market probability into bounded perpetual exposure. The agent may propose the mandate. It cannot rewrite it after authorization.</p>
+        <p class="kicker">PRECOMMITTED POLICY · THE AGENT CANNOT RESIZE IT</p>
+        <h1>52% allows $200.<br/><span>71% allows $420.</span></h1>
+        <p class="hero-sub" id="heroExample">Bitcoin probability moves from 52% to 71%. The Fuse policy, fixed before any capital moves, raises the permitted SOL-perp exposure from $200 to $420. A later drop under 35% kills the mandate. The agent cannot reopen it.</p>
         <div class="hero-actions">
-          <button id="armBtn" class="btn primary">ARM FUSE</button>
-          <button id="verifyBtn" class="btn ghost">✓ VERIFY FUSE</button>
+          <button id="watchLiveBtn" class="btn primary">WATCH LIVE</button>
+          <button id="replayBtn" class="btn ghost">REPLAY VERIFIED RUN</button>
         </div>
+        <p class="microcopy" id="heroMarket">Loading the committed market…</p>
       </div>
       <div class="commitment-card">
         <div class="commitment-top"><span>POLICY COMMITMENT</span><span id="integrityLabel" class="proof-dot">DEVNET</span></div>
@@ -45,6 +46,49 @@
         </div>
       </div>
     </section>
+
+    <section class="curve-stage panel" id="curveStage">
+      <div class="panel-head">
+        <div><span class="panel-index">01</span><h2>Precommitted curve</h2></div>
+        <div class="head-tags"><span class="mini-pill" id="curveMode">LIVE POLICY</span><span class="mini-pill">ONCHAIN RECOMPUTABLE</span></div>
+      </div>
+      <div class="curve-readout">
+        <div><span>PROBABILITY</span><strong id="curveNowP">—</strong></div>
+        <div><span>PERMITTED EXPOSURE</span><strong id="curveNowE">—</strong></div>
+        <p id="curveNote">The marker sits on the committed curve. Exposure is the step the program will accept, not a size the agent picks.</p>
+      </div>
+      <div class="curve-track" aria-hidden="true"><i id="curveNeedle"></i><b id="curveNeedleLabel"></b></div>
+      <div class="curve-shell"><div id="curve" class="curve"></div></div>
+      <div class="policy-explain">
+        <div><span>LAST REASON</span><strong id="reason">NOOP</strong></div>
+        <div><span>PERMITTED NOW</span><strong id="expectedTarget">$0</strong></div>
+        <div><span>POLICY RESULT</span><strong id="policyResult" class="green">READY</strong></div>
+        <div><span>POLICY HASH</span><code id="receiptHash">—</code></div>
+      </div>
+    </section>
+
+    <section id="killMoment" class="kill-moment hidden" aria-live="polite">
+      <div>
+        <span>ABSORBING KILL</span>
+        <h2 id="killMomentTitle">KILLED → position closed → mandate permanently locked.</h2>
+        <p id="rejectLine" class="hidden">The agent then requests $500. The killed mandate rejects it. Permitted exposure stays $0.</p>
+      </div>
+    </section>
+
+    <article class="panel receipt-feature" id="featuredReceipt">
+      <div class="panel-head"><div><span class="panel-index">02</span><h2>Execution receipt</h2></div><strong id="receiptVerdict" class="receipt-verdict">WAITING</strong></div>
+      <div class="receipt-fields">
+        <div><span>SIGNAL PROBABILITY</span><b id="rfProb">—</b></div>
+        <div><span>POLICY-PERMITTED</span><b id="rfPermitted">—</b></div>
+        <div><span>REQUESTED</span><b id="rfRequested">—</b></div>
+        <div><span>ACTUAL EXPOSURE</span><b id="rfActual">—</b></div>
+        <div><span>RISK CAP</span><b id="rfCap">$500</b></div>
+        <div><span>EXECUTION NONCE</span><b id="rfNonce">—</b></div>
+        <div class="span-field"><span id="rfHashLabel">RECEIPT HASH</span><code id="rfHash">—</code></div>
+        <div><span>SOLANA TX</span><a id="rfTx" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+      </div>
+      <details class="raw-hash"><summary>Raw receipt</summary><pre id="rfRaw">Waiting for a receipt.</pre></details>
+    </article>
 
     <section class="flow-card" aria-label="Fuse execution flow">
       <div class="flow-line"></div>
@@ -89,18 +133,10 @@
           <div><span>UPNL</span><b id="pnl">$0.00</b></div>
         </div>
         <div class="safety-strip"><i></i><span>Fail-safe: uncertainty can reduce risk, never increase it.</span></div>
-        <div class="row-actions"><button id="emergencyKillBtn" class="btn danger-soft">EMERGENCY KILL</button><button id="settleBtn" class="btn ghost">SETTLE</button><button id="newFuseBtn" class="btn ghost">NEW MANDATE</button></div>
-      </article>
-
-      <article class="panel curve-panel span-2">
-        <div class="panel-head"><div><span class="panel-index">03</span><h2>Precommitted curve</h2></div><div class="head-tags"><span class="mini-pill">ONCHAIN RECOMPUTABLE</span><span class="mini-pill">HYSTERESIS ±1%</span></div></div>
-        <div class="curve-shell"><div id="curve" class="curve"></div></div>
-        <div class="policy-explain">
-          <div><span>LAST REASON</span><strong id="reason">NOOP</strong></div>
-          <div><span>EXPECTED TARGET</span><strong id="expectedTarget">$0</strong></div>
-          <div><span>POLICY RESULT</span><strong id="policyResult" class="green">READY</strong></div>
-          <div><span>RECEIPT HEAD</span><code id="receiptHash">—</code></div>
-        </div>
+        <details class="operator-drawer">
+          <summary>Operator controls</summary>
+          <div class="row-actions"><button id="armBtn" class="btn ghost">ARM FUSE</button><button id="emergencyKillBtn" class="btn danger-soft">EMERGENCY KILL</button><button id="settleBtn" class="btn ghost">SETTLE</button><button id="newFuseBtn" class="btn ghost">NEW MANDATE</button></div>
+        </details>
       </article>
 
       <article class="panel proof-panel">
@@ -130,12 +166,12 @@
     <section class="proof-drawer panel span-2" id="chainProofSection">
       <div class="panel-head"><div><span class="panel-index">06</span><h2>Chain proof</h2></div><span id="chainProofMode" class="mini-pill">DEVNET</span></div>
       <div class="chain-proof-grid">
-        <div><span>PROGRAM</span><a id="proofProgram" target="_blank" rel="noreferrer">NOT DEPLOYED</a></div>
-        <div><span>FUSE PDA</span><a id="proofPda" target="_blank" rel="noreferrer">NOT DEPLOYED</a></div>
-        <div><span>KILL TX</span><a id="proofKillTx" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
-        <div><span>FLASH OPEN</span><a id="proofFlashOpen" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
-        <div><span>FLASH RESIZE</span><a id="proofFlashResize" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
-        <div><span>FLASH CLOSE</span><a id="proofFlashClose" target="_blank" rel="noreferrer">PENDING DEVNET</a></div>
+        <div><span>PROGRAM</span><a id="proofProgram" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>FUSE PDA</span><a id="proofPda" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>KILL TX</span><a id="proofKillTx" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>FLASH OPEN</span><a id="proofFlashOpen" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>FLASH RESIZE</span><a id="proofFlashResize" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>FLASH CLOSE</span><a id="proofFlashClose" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>BUILD</span><code id="proofBuild">DEV_UNSET</code></div>
       </div>
       <p class="microcopy">Every commitment, kill and fill is a Solana devnet transaction. Links open the live accounts and transactions on Solscan.</p>
