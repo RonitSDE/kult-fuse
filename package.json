@@ -5,7 +5,7 @@
   "type": "module",
   "description": "KULT Fuse \u2014 a Solana execution mandate: live prediction-market probability drives a perp position within an onchain-enforced policy",
   "engines": {
-    "node": ">=22.9"
+    "node": ">=22.14"
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/http/server.mjs",
@@ -20,10 +20,16 @@
     "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs",
     "smoke:polymarket": "node --env-file-if-exists=.env scripts/smoke-polymarket.mjs"
   },
+  "dependencies": {
+    "@pythnetwork/price-service-client": "1.10.0"
+  },
   "optionalDependencies": {
     "@coral-xyz/anchor": "0.31.1",
     "@solana/web3.js": "1.98.4",
     "bn.js": "5.2.2",
     "flash-sdk": "15.17.2"
+  },
+  "overrides": {
+    "@pythnetwork/price-service-client": "1.10.0"
   }
 }
