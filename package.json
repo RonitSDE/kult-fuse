@@ -31,5 +31,8 @@
   },
   "overrides": {
     "@pythnetwork/price-service-client": "1.10.0"
+  },
+  "resolutions": {
+    "@pythnetwork/price-service-client": "1.10.0"
   }
 }
