@@ -39,7 +39,7 @@ Populate `.env` with `FUSE_PROGRAM_ID` and the owner / oracle / execution keys. 
 
 ## 4. Polymarket live-data smoke
 
-Set `POLYMARKET_MARKET` to an active market slug, then:
+The market slug is `DEFAULT_POLYMARKET_MARKET` in `src/adapters/event/polymarket-event.mjs`. Then:
 
 ```bash
 npm run smoke:polymarket

@@ -49,8 +49,6 @@ services:
         sync: false
       - key: PUBLIC_URL
         sync: false
-      - key: POLYMARKET_MARKET
-        sync: false
       - key: FLASH_PRIVATE_KEY_JSON
         sync: false
       - key: FUSE_OWNER_PRIVATE_KEY_JSON

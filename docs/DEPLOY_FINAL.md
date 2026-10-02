@@ -41,7 +41,6 @@ FUSE_ADMIN_TOKEN=<24+ char random token>
 SOLANA_CLUSTER=devnet
 SOLANA_RPC_URL=<devnet RPC>
 EVENT_SOURCE=polymarket
-POLYMARKET_MARKET=<active market slug>
 PERP_ADAPTER=flash
 FLASH_CLUSTER=devnet
 FLASH_POOL=devnet.1
@@ -56,7 +55,7 @@ BUILD_SHA=<git sha>
 
 Use separate owner / oracle / execution / Flash keys. Fund each with devnet SOL; fund the Flash key with Flash devnet USDC (enough collateral for the policy's hard cap at `FLASH_LEVERAGE_X`).
 
-Pick a Polymarket market that is open, liquid (tight spread, within the policy's `maxSpreadBps`) and whose current probability sits inside the policy curve (`POLICY_FILE`, default `policy.example.json`).
+The live market slug is `DEFAULT_POLYMARKET_MARKET` in `src/adapters/event/polymarket-event.mjs` (Will Bitcoin reach $95,000 by December 31, 2026?). Change that constant to move the mandate. It must stay open, liquid, and inside the policy curve.
 
 ```bash
 npm run preflight
@@ -106,7 +105,7 @@ Health check path: `/healthz`.
 `render.yaml` is a starter web service (Node 22.14) with a 1 GB disk mounted at `/var/data`. A free instance cannot keep that disk and will sleep, which stops the worker.
 
 1. Push this repo to GitHub.
-2. In Render: **New** → **Blueprint**, select the repo, and fill every `sync: false` variable (market slug, three Fuse keys, Flash key, `BUILD_SHA`, `PUBLIC_URL`). `FUSE_ADMIN_TOKEN` is generated; copy it from the service environment to sign in as operator.
+2. In Render: **New** → **Blueprint**, select the repo, and fill every `sync: false` variable (three Fuse keys, Flash key, `BUILD_SHA`, `PUBLIC_URL`). The market slug is in the source. `FUSE_ADMIN_TOKEN` is generated; copy it from the service environment to sign in as operator.
 3. After the first deploy, set `PUBLIC_URL` to the `https://….onrender.com` address and `BUILD_SHA` to `git rev-parse HEAD`, then redeploy.
 4. Confirm `https://<service>.onrender.com/healthz` returns `"onchain": true` and the configured market.
 

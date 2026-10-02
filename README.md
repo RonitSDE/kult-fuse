@@ -104,7 +104,7 @@ Requires Node.js 22.9+, and for the program: Rust, Solana CLI and Anchor 0.31.
 npm install
 npm test                    # 22 deterministic tests
 
-cp .env.example .env        # fill keys, market slug and operator token
+cp .env.example .env        # fill keys and operator token; market slug is in code
 npm run preflight           # checks every required setting
 npm run smoke:polymarket    # live quote for the chosen market
 npm run smoke:flash         # read-only Flash devnet connection

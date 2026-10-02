@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { FileStore } from '../adapters/store/file-store.mjs';
 import { DFlowEventSource } from '../adapters/event/dflow-event.mjs';
-import { PolymarketEventSource } from '../adapters/event/polymarket-event.mjs';
+import { DEFAULT_POLYMARKET_MARKET, PolymarketEventSource } from '../adapters/event/polymarket-event.mjs';
 import { makePerpAdapter } from '../adapters/perp/factory.mjs';
 import { policyHash, validatePolicy } from '../core/policy.mjs';
 import { initialFuse } from '../core/state.mjs';
@@ -69,7 +69,7 @@ export class Runtime {
   makeEventSource() {
     const kind = (this.env.EVENT_SOURCE || 'polymarket').toLowerCase();
     if (kind === 'polymarket') {
-      const src = new PolymarketEventSource({ market: this.env.POLYMARKET_MARKET, outcome: this.env.POLYMARKET_OUTCOME || 'Yes', gammaUrl: this.env.POLYMARKET_GAMMA_URL, clobUrl: this.env.POLYMARKET_CLOB_URL });
+      const src = new PolymarketEventSource({ market: this.env.POLYMARKET_MARKET || DEFAULT_POLYMARKET_MARKET, outcome: this.env.POLYMARKET_OUTCOME || 'Yes', gammaUrl: this.env.POLYMARKET_GAMMA_URL, clobUrl: this.env.POLYMARKET_CLOB_URL });
       const init = src.init.bind(src);
       src.init = async () => { const i = await init(); return { kind, id: i.slug, question: i.question, outcome: i.outcome, url: i.url, endDateMs: i.endDateMs }; };
       return src;

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { DEFAULT_POLYMARKET_MARKET } from '../src/adapters/event/polymarket-event.mjs';
 const env = process.env;
 const checks = [];
 const add = (name, ok, detail='') => checks.push({name, ok:Boolean(ok), detail});
@@ -8,7 +9,10 @@ add('Operator token', env.FUSE_ADMIN_TOKEN && !env.FUSE_ADMIN_TOKEN.startsWith('
 add('Solana RPC', env.SOLANA_RPC_URL && !env.SOLANA_RPC_URL.includes('YOUR_API_KEY'), env.SOLANA_CLUSTER || 'devnet');
 
 const source = (env.EVENT_SOURCE || 'polymarket').toLowerCase();
-if (source === 'polymarket') add('Polymarket market', env.POLYMARKET_MARKET, env.POLYMARKET_MARKET || 'POLYMARKET_MARKET unset');
+if (source === 'polymarket') {
+  const market = env.POLYMARKET_MARKET || DEFAULT_POLYMARKET_MARKET;
+  add('Polymarket market', market, market);
+}
 else if (source === 'dflow') {
   add('DFlow API key', env.DFLOW_API_KEY, 'required for dflow');
   add('DFlow market mint', env.DFLOW_MARKET_MINT, 'required for dflow');
