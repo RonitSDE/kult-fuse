@@ -15,7 +15,20 @@ KULT Fuse is a Solana execution mandate. A live prediction-market probability dr
 | Live app | `TODO: public URL` |
 | Demo video | `TODO: video link` |
 | Fuse program (Solana devnet) | [`C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv`](https://solscan.io/account/C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv?cluster=devnet) |
-| Current Fuse account + transactions | Shown live in the app's **Chain proof** panel; every receipt links to its onchain transactions |
+| Proof-run Fuse account | [`Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf`](https://solscan.io/account/Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf?cluster=devnet) |
+
+### Devnet proof links
+
+These four Fuse transactions confirmed on devnet for a $15 → $25 SOL/USDC attempt:
+
+| Step | Transaction |
+|---|---|
+| Create | [`57PkkfhowF8eZygC92VKk2ixkSkfRoNBN9wqjD6Xn9eLWvYjoruS16aXKBeEEHqf6Hi8hU4z2gzPLQnkgtdbqSAQ`](https://solscan.io/tx/57PkkfhowF8eZygC92VKk2ixkSkfRoNBN9wqjD6Xn9eLWvYjoruS16aXKBeEEHqf6Hi8hU4z2gzPLQnkgtdbqSAQ?cluster=devnet) |
+| Arm | [`5cahRvvKGtDx62TgBT35uPwDthxRtsxX4BoBrFxVdPEMua9U7JszLvDd3qB1yz3gHR5Pm24m6BXLXuZxDsBiXN1U`](https://solscan.io/tx/5cahRvvKGtDx62TgBT35uPwDthxRtsxX4BoBrFxVdPEMua9U7JszLvDd3qB1yz3gHR5Pm24m6BXLXuZxDsBiXN1U?cluster=devnet) |
+| Target | [`vzvQAWh2BLRgaTLCFFTGNrVU1VG96b1Jiob2Eh8y2U8MkdEs8smZxir8PhuktVg3LtLsmM8o7kecLYNFrh3SWjk`](https://solscan.io/tx/vzvQAWh2BLRgaTLCFFTGNrVU1VG96b1Jiob2Eh8y2U8MkdEs8smZxir8PhuktVg3LtLsmM8o7kecLYNFrh3SWjk?cluster=devnet) |
+| Kill | [`2V7uzwpAoc866BJNQm3qs7waMKKsr1BZWGg2wN4XGTByS4Z8EjREgo96Hb9QhKzjfZXwkxDMgeLzeXTnehJ8RB2Q`](https://solscan.io/tx/2V7uzwpAoc866BJNQm3qs7waMKKsr1BZWGg2wN4XGTByS4Z8EjREgo96Hb9QhKzjfZXwkxDMgeLzeXTnehJ8RB2Q?cluster=devnet) |
+
+Flash open, resize, and close did not land, so there are no venue signatures and the app does not offer a verified replay. The live devnet pool rejects the old `open_position` instruction. The replacement `open_position_er` was simulated against the only initialized SOL market (`SOL/JitoSOL` long) and returned `InstructionNotAllowed`: that market and its pool are not delegated to the rollup, and only the Flash admin can delegate them. The same Fuse links are in [`docs/devnet-proof.json`](docs/devnet-proof.json) and the dashboard chain-proof panel.
 
 ## The problem
 
@@ -69,9 +82,11 @@ Band changes require two consistent observations plus ±1% hysteresis; kills ski
 
 - the prediction-market quote itself
 - Flash Trade fills and offchain transaction construction
-- offchain P&L and loss-stop calculations
+- Flash unrealized P&L. The worker reads Flash `pnlWithFeeUsd`. If that P&L reaches −$50, the worker submits an authorized kill. The Fuse program stores `loss_stop_usd` and checks the submitted target; it does not read the Flash wallet or compute that P&L.
 
-The execution agent cannot get a target larger than the committed curve through the program. See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) for the full trust boundary.
+**Trust boundary.** Fuse checks the targets submitted to it. It does not control the Flash wallet. An onchain kill blocks new Fuse exposure. The worker sends the separate Flash close.
+
+The execution agent cannot get a target larger than the committed curve through the program. See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
 
 ## Built with
 

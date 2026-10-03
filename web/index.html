@@ -31,9 +31,11 @@
         <p class="hero-sub" id="heroExample">Bitcoin probability moves from 52% to 71%. The Fuse policy, fixed before any capital moves, raises the permitted SOL-perp exposure from $200 to $420. A later drop under 35% kills the mandate. The agent cannot reopen it.</p>
         <div class="hero-actions">
           <button id="watchLiveBtn" class="btn primary">WATCH LIVE</button>
-          <button id="replayBtn" class="btn ghost">REPLAY VERIFIED RUN</button>
+          <button id="replayBtn" class="btn ghost">SIMULATION</button>
+          <button id="verifiedReplayBtn" class="btn ghost hidden">VERIFIED REPLAY</button>
         </div>
         <p class="microcopy" id="heroMarket">Loading the committed market…</p>
+        <p class="microcopy" id="liveQuote">Fetching Polymarket quote…</p>
       </div>
       <div class="commitment-card">
         <div class="commitment-top"><span>POLICY COMMITMENT</span><span id="integrityLabel" class="proof-dot">DEVNET</span></div>
@@ -46,6 +48,11 @@
         </div>
       </div>
     </section>
+
+    <aside class="trust-boundary">
+      <span>TRUST BOUNDARY</span>
+      <p>Fuse checks the targets submitted to it. It does not control the Flash wallet. An onchain kill blocks new Fuse exposure. The worker sends the separate Flash close.</p>
+    </aside>
 
     <section class="curve-stage panel" id="curveStage">
       <div class="panel-head">
@@ -119,7 +126,7 @@
       </article>
 
       <article class="panel position-panel">
-        <div class="panel-head"><div><span class="panel-index">02</span><h2>Consequence</h2></div><span class="mini-pill">SOL-PERP LONG</span></div>
+        <div class="panel-head"><div><span class="panel-index">02</span><h2>Consequence</h2></div><span class="mini-pill" id="perpSide">SOL-PERP</span></div>
         <div class="position-hero">
           <div><span>TARGET</span><strong id="target">$0</strong><small>curve-authorized</small></div>
           <div class="position-separator">→</div>
@@ -130,8 +137,9 @@
           <div><span>HARD CAP</span><b id="cap">$500</b></div>
           <div><span>KILL</span><b id="kill">&lt;35%</b></div>
           <div><span>MARK</span><b id="markPrice">—</b></div>
-          <div><span>UPNL</span><b id="pnl">$0.00</b></div>
+          <div><span>FLASH P&amp;L</span><b id="pnl">—</b></div>
         </div>
+        <p class="microcopy" id="lossStopNote">Loss stop: the worker closes if Flash P&amp;L reaches −$50. Fuse does not calculate that P&amp;L.</p>
         <div class="safety-strip"><i></i><span>Fail-safe: uncertainty can reduce risk, never increase it.</span></div>
         <details class="operator-drawer">
           <summary>Operator controls</summary>
@@ -168,6 +176,7 @@
       <div class="chain-proof-grid">
         <div><span>PROGRAM</span><a id="proofProgram" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>FUSE PDA</span><a id="proofPda" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>TARGET TX</span><a id="proofTarget" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>KILL TX</span><a id="proofKillTx" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>FLASH OPEN</span><a id="proofFlashOpen" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>FLASH RESIZE</span><a id="proofFlashResize" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>

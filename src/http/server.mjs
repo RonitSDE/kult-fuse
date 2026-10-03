@@ -55,7 +55,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname === '/healthz') {
     const i = runtime.integrity();
-    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.2.0', network: i.network, market: runtime.market?.id, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.2.0', network: i.network, market: runtime.market?.id, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quote || null, quoteError: runtime.quoteError || null, time: new Date().toISOString() });
   }
   if (url.pathname.startsWith('/api/')) return api(req, res, url);
   let rel = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -75,6 +75,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(port, '0.0.0.0', () => {
   console.log(`KULT Fuse running on http://localhost:${port}`);
   console.log(`market=${runtime.market.kind}:${runtime.market.id} perp=${process.env.PERP_ADAPTER || 'flash'} fuse=${runtime.activeFusePda()}`);
+  runtime.startQuoteWatch();
 });
 
 // The live worker polls the market and reconciles the position; disable only for maintenance.

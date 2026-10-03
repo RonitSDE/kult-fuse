@@ -74,9 +74,19 @@ export class FlashPerpAdapter {
     this.client = client;
     this.targetCustody = targetCustody;
     this.collateralCustody = collateralCustody;
-    this.side = flash.Side.Long;
-    this.privilege = flash.Privilege?.None ?? 0;
-    this.marketConfig = pool.getMarketConfig(targetCustody.custodyAccount, collateralCustody.custodyAccount, this.side);
+    const preferred = String(this.opts.side || 'long').toLowerCase() === 'short' ? flash.Side.Short : flash.Side.Long;
+    const alternate = preferred === flash.Side.Long ? flash.Side.Short : flash.Side.Long;
+    let side = preferred;
+    let marketConfig = pool.getMarketConfig(targetCustody.custodyAccount, collateralCustody.custodyAccount, side);
+    if (!marketConfig) {
+      side = alternate;
+      marketConfig = pool.getMarketConfig(targetCustody.custodyAccount, collateralCustody.custodyAccount, side);
+    }
+    if (!marketConfig) throw new Error(`No Flash ${this.opts.targetSymbol}/${this.opts.collateralSymbol} market in ${this.opts.poolName}`);
+    this.side = side;
+    this.sideName = side === flash.Side.Short ? 'short' : 'long';
+    this.privilege = { none: {} };
+    this.marketConfig = marketConfig;
     this.positionKey = client.getPositionKey(wallet.publicKey, targetCustody.custodyAccount, collateralCustody.custodyAccount, this.side);
     try { await client.loadAddressLookupTable(pool); } catch { /* lazy-loaded again before send */ }
     this.ready = true;
@@ -91,6 +101,27 @@ export class FlashPerpAdapter {
   }
 
   _usdFromBn(value) { return Number(value?.toString?.() || 0) / 1_000_000; }
+
+  // Flash reports pnlWithFeeUsd as an i64 with 6 decimals. Anchor may hand it back already signed or as raw two's complement.
+  _i64Usd(value) {
+    if (value == null) return null;
+    let n;
+    try { n = BigInt(value.toString()); } catch { return null; }
+    const signBit = 1n << 63n;
+    if (n >= signBit) n -= 1n << 64n;
+    return Number(n) / 1_000_000;
+  }
+
+  async _unrealizedPnlUsd(raw) {
+    try {
+      const data = await this.client.getPositionData(raw, this.pool, this.wallet.publicKey);
+      const net = this._i64Usd(data?.pnlWithFeeUsd);
+      if (net == null || !Number.isFinite(net)) return null;
+      return net;
+    } catch {
+      return null;
+    }
+  }
 
   _mulDivBn(a, numerator, denominator) {
     const A = new this.sdk.BN(a.toString());
@@ -109,7 +140,8 @@ export class FlashPerpAdapter {
         this.collateralCustody.custodyAccount,
         this.side
       );
-      return position || null;
+      if (position && this._usdFromBn(position.sizeUsd) > 0) return position;
+      return null;
     } catch (error) {
       const msg = String(error?.message || error);
       if (/not found|does not exist|AccountNotFound|could not find/i.test(msg)) return null;
@@ -129,26 +161,28 @@ export class FlashPerpAdapter {
 
   async getPosition() {
     const raw = await this._getRawPosition();
+    const ref = this.positionKey?.toBase58?.() || null;
     if (!raw || this._usdFromBn(raw.sizeUsd) <= 0) {
       return {
-        venue: 'FLASH', symbol: this.opts.symbol, exposureUsd: 0, markPrice: null,
-        unrealizedPnlUsd: 0, positionRef: this.positionKey?.toBase58?.() || null
+        venue: 'FLASH', symbol: this.opts.symbol, side: this.sideName, exposureUsd: 0, markPrice: null,
+        unrealizedPnlUsd: 0, positionRef: ref
       };
     }
     let markPrice = null;
     try {
       const quote = await this._quoteClose(raw);
-      const rawMark = quote?.markPrice || quote?.price || quote?.exitPrice;
-      // Flash prices commonly use 6 decimals. Preserve null rather than inventing a price.
+      const rawMark = quote?.markPrice?.price || quote?.markPrice || quote?.price || quote?.exitPrice;
       if (rawMark?.toString) markPrice = Number(rawMark.toString()) / 1_000_000;
     } catch { /* reconciliation does not depend on a mark */ }
+    const pnl = await this._unrealizedPnlUsd(raw);
     return {
       venue: 'FLASH',
       symbol: this.opts.symbol,
+      side: this.sideName,
       exposureUsd: this._usdFromBn(raw.sizeUsd),
       markPrice,
-      unrealizedPnlUsd: 0,
-      positionRef: this.positionKey.toBase58(),
+      unrealizedPnlUsd: pnl,
+      positionRef: ref,
       sizeAmount: raw.sizeAmount?.toString?.() || null,
       sizeUsdRaw: raw.sizeUsd?.toString?.() || null
     };
@@ -171,19 +205,12 @@ export class FlashPerpAdapter {
       ? this.sdk.uiDecimalsToNative(collateralUi.toFixed(this.collateralCustody.decimals), this.collateralCustody.decimals)
       : new this.sdk.BN(Math.round(collateralUi * (10 ** this.collateralCustody.decimals)));
     const leverage = new this.sdk.BN(Math.round(leverageX * 10_000));
-
-    const quote = await this.client.getOpenPositionQuote(
-      amountIn,
-      leverage,
-      this.marketConfig,
-      this.pool
-    );
+    const quote = await this.client.getOpenPositionQuote(amountIn, leverage, this.marketConfig, this.pool);
     if (!quote) throw new Error('Flash open quote unavailable');
     const entryPrice = quote.finalEntryPrice || quote.entryPrice || quote.markPrice;
     const collateral = quote.collateralAmount || amountIn;
     const size = quote.sizeAmount;
     if (!entryPrice || !size) throw new Error('Flash open quote missing price/size');
-
     const built = await this.client.openPosition(
       this.opts.targetSymbol,
       this.opts.collateralSymbol,
@@ -273,7 +300,7 @@ export class FlashPerpAdapter {
   async executeTarget(targetUsd, { clientOrderId, reduceOnly = false } = {}) {
     await this.ensureReady();
     const target = Number(targetUsd);
-    if (!Number.isFinite(target) || target < 0) throw new Error('Flash v1 Fuse adapter supports non-negative SOL long targets only');
+    if (!Number.isFinite(target) || target < 0) throw new Error('Flash v1 Fuse adapter supports non-negative SOL targets only');
 
     const before = await this.getPosition();
     const actual = Number(before.exposureUsd || 0);

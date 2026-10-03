@@ -7,6 +7,7 @@ import { initialFuse } from '../src/core/state.mjs';
 import { createReceipt, verifyReceiptChain } from '../src/core/receipt.mjs';
 import { verifyFuse } from '../src/core/verifier.mjs';
 import { replayPolicy } from '../src/core/replay.mjs';
+import { evaluateRisk } from '../src/core/risk.mjs';
 
 const policy = testPolicy();
 
@@ -30,6 +31,16 @@ test('hysteresis blocks 59.5/60.5 chatter around 60% band', () => {
 
 test('hysteresis enters next band after 61%', () => {
   assert.equal(hysteresisTarget(policy, 6100, 200).targetUsd, 300);
+});
+
+test('loss stop uses a real P&L and ignores a missing quote', () => {
+  const fuse = { status: 'OPEN', policy, filledExposureUsd: 200 };
+  assert.equal(evaluateRisk({ fuse, proposedTargetUsd: 200, unrealizedPnlUsd: null }).kill, false);
+  assert.equal(evaluateRisk({ fuse, proposedTargetUsd: 200, unrealizedPnlUsd: -49.99 }).kill, false);
+  const hit = evaluateRisk({ fuse, proposedTargetUsd: 200, unrealizedPnlUsd: -50 });
+  assert.equal(hit.kill, true);
+  assert.equal(hit.targetUsd, 0);
+  assert.equal(hit.reason, 'LOSS_STOP');
 });
 
 test('kill is absorbing in replay', () => {

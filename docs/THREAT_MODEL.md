@@ -29,7 +29,10 @@ Control: stale/wide observations cannot increase exposure.
 Control: `KILLED` is absorbing. Onchain target can only be zero/reducing after kill.
 
 ### Loss-stop marketed as guaranteed loss cap
-Control: terminology says **loss-stop trigger**. Hard invariant is target notional cap; gaps/slippage can exceed the requested loss budget.
+Control: the worker reads Flash `pnlWithFeeUsd` and, at −$50, submits an authorized kill, then sends the Flash close. The program does not compute venue P&L. Gaps and slippage can exceed $50 before that close lands. The hard onchain invariant is the target notional cap.
+
+### Worker treated as the Flash wallet
+Control: Fuse checks submitted targets and, once killed, rejects new exposure. It does not hold or sign the Flash wallet. The worker sends the separate Flash close.
 
 ### Compromised AI/agent
 Control: Agent proposes only. Committed policy, authorities and hard cap govern execution after authorization.
@@ -44,5 +47,7 @@ Control: separate oracle authority, freshness/sequence constraints. V1 still tru
 Control: hash-linked receipts with latest hash anchored onchain. Any historical edit breaks verification.
 
 ## Known v1 trust boundaries
+
+Fuse checks the targets submitted to it. It does not control the Flash wallet. An onchain kill blocks new Fuse exposure. The worker sends the separate Flash close.
 
 External prediction-market probability and external perp fills are not made trustless by the Fuse program. The program proves authorization and bounded policy state; it does not cryptographically prove an offchain venue's matching engine.

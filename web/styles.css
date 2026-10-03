@@ -9,6 +9,9 @@
 
 .chain-proof-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.chain-proof-grid>div{border:1px solid #1d2731;background:#080d12;padding:14px;min-height:76px}.chain-proof-grid span{display:block;font-size:8px;letter-spacing:.14em;color:#667383;margin-bottom:9px}.chain-proof-grid a,.chain-proof-grid code{color:var(--cyan);font-size:11px;text-decoration:none;word-break:break-all}.chain-proof-grid a:not([href]){color:#697585;pointer-events:none}.proof-live{color:var(--lime)!important}.proof-local{color:var(--amber)!important}.proof-loading{color:#8ea0b3!important}.proof-missing{color:#8ea0b3!important}@media(max-width:760px){.chain-proof-grid{grid-template-columns:1fr 1fr}}
 
+.trust-boundary{display:grid;grid-template-columns:160px 1fr;gap:18px;align-items:start;margin:0 0 14px;padding:16px 18px;border:1px solid #243140;background:#080d12}
+.trust-boundary span{font-size:10px;letter-spacing:.16em;color:#8ea0b3}
+.trust-boundary p{margin:0;color:#d5dde6;font-size:15px;line-height:1.5}
 .operator-link{background:transparent;border:0;color:#6d7b8a;font-size:10px;letter-spacing:.12em;cursor:pointer;padding:8px 4px}
 .operator-link:hover{color:#d5dde6}
 .hero-example,.hero-sub{font-size:17px;line-height:1.55}

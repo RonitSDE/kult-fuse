@@ -14,18 +14,19 @@ const TERMINAL = ['KILLED', 'SETTLED'];
 
 // Live chain and venue signatures win. Pinned PROOF_* env values are only a fallback
 // for a process whose local receipt log has not yet recorded that transaction.
-export function proofTransactions({ env = {}, chain = null, fuse = null, receipts = [] } = {}) {
+export function proofTransactions({ env = {}, chain = null, fuse = null, receipts = [], pins = {} } = {}) {
   const txs = fuse?.chainTxs || [];
   const lastIx = (pred) => [...txs].reverse().find(pred)?.signature || null;
   const lastReceipt = (pred) => [...receipts].reverse().find((r) => pred(r) && r.txSignature)?.txSignature || null;
   const pick = (live, pinned) => live || pinned || null;
   return {
-    create: pick(chain?.createTx || lastIx((t) => t.ix === 'init_fuse'), env.PROOF_CREATE_TX),
-    arm: pick(lastIx((t) => t.ix === 'arm_fuse'), env.PROOF_ARM_TX),
-    kill: pick(lastIx((t) => String(t.ix || '').startsWith('trigger_')), env.PROOF_KILL_TX),
-    flashOpen: pick(lastReceipt((r) => r.reason === 'INITIAL_OPEN'), env.PROOF_FLASH_OPEN_TX),
-    flashResize: pick(lastReceipt((r) => r.reason === 'PROBABILITY_STEP_UP' || r.reason === 'PROBABILITY_STEP_DOWN'), env.PROOF_FLASH_RESIZE_TX),
-    flashClose: pick(lastReceipt((r) => r.reason === 'KILL_PROBABILITY' || r.reason === 'EMERGENCY_KILL'), env.PROOF_FLASH_CLOSE_TX)
+    create: pick(chain?.createTx || lastIx((t) => t.ix === 'init_fuse'), env.PROOF_CREATE_TX || pins.create),
+    arm: pick(lastIx((t) => t.ix === 'arm_fuse'), env.PROOF_ARM_TX || pins.arm),
+    target: pick(lastIx((t) => t.ix === 'set_target'), env.PROOF_TARGET_TX || pins.target),
+    kill: pick(lastIx((t) => String(t.ix || '').startsWith('trigger_')), env.PROOF_KILL_TX || pins.kill),
+    flashOpen: pick(lastReceipt((r) => r.reason === 'INITIAL_OPEN'), env.PROOF_FLASH_OPEN_TX || pins.flashOpen),
+    flashResize: pick(lastReceipt((r) => r.reason === 'PROBABILITY_STEP_UP' || r.reason === 'PROBABILITY_STEP_DOWN'), env.PROOF_FLASH_RESIZE_TX || pins.flashResize),
+    flashClose: pick(lastReceipt((r) => r.reason === 'KILL_PROBABILITY' || r.reason === 'EMERGENCY_KILL' || r.reason === 'LOSS_STOP'), env.PROOF_FLASH_CLOSE_TX || pins.flashClose)
   };
 }
 
@@ -33,6 +34,10 @@ export class Runtime {
   constructor(env = process.env) {
     this.env = env;
     this.store = new FileStore(env.DATA_DIR || './.data');
+    this.proofPins = {};
+    this.pinnedVerifiedRun = null;
+    this.quote = null;
+    this.quoteError = null;
   }
 
   async init() {
@@ -43,6 +48,7 @@ export class Runtime {
     this.basePolicy = JSON.parse(await fs.readFile(this.env.POLICY_FILE || './policy.example.json', 'utf8'));
     this.perp = await makePerpAdapter(this.env);
     this.chain = await this.store.read('chain', null);
+    await this.loadVerifiedRun();
     this.chainHooks = await this.makeChainHooks();
 
     let fuse = await this.store.read('fuse');
@@ -177,9 +183,64 @@ export class Runtime {
     return this.getState();
   }
 
+  async loadVerifiedRun() {
+    this.proofPins = {};
+    this.pinnedVerifiedRun = null;
+    try {
+      const raw = await fs.readFile(new URL('../../docs/devnet-proof.json', import.meta.url), 'utf8');
+      const parsed = JSON.parse(raw);
+      this.proofPins = parsed.transactions || {};
+      const receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
+      if (receipts.length && receipts.every((r) => r?.hash && r?.txSignature)) this.pinnedVerifiedRun = parsed;
+    } catch { /* no recorded run yet */ }
+  }
+
+  verifiedRunPayload() {
+    const live = this.receipts || [];
+    const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: live, pins: this.proofPins });
+    if (live.length && live.every((r) => r?.hash && r?.txSignature)) {
+      return { source: 'live', residualUsd: null, transactions: txs, receipts: live };
+    }
+    if (!this.pinnedVerifiedRun) return null;
+    return {
+      source: 'recorded',
+      label: this.pinnedVerifiedRun.label || null,
+      residualUsd: this.pinnedVerifiedRun.residualUsd ?? null,
+      transactions: txs,
+      receipts: this.pinnedVerifiedRun.receipts
+    };
+  }
+
+  startQuoteWatch() {
+    const pull = async () => {
+      try {
+        const raw = await this.eventSource.read();
+        const bid = Number(raw.bid);
+        const ask = Number(raw.ask);
+        const mid = (bid + ask) / 2;
+        this.quote = {
+          question: this.market?.question || null,
+          outcome: this.market?.outcome || null,
+          url: this.market?.url || null,
+          bid,
+          ask,
+          probability: mid,
+          spreadBps: mid > 0 ? Math.round(((ask - bid) / mid) * 10000) : null,
+          source: raw.source,
+          at: new Date().toISOString()
+        };
+        this.quoteError = null;
+      } catch (error) {
+        this.quoteError = error.message;
+      }
+    };
+    pull();
+    setInterval(pull, 8000).unref();
+  }
+
   async getState() {
     const position = await this.perp.getPosition();
-    return { integrity: this.integrity(), market: this.market, fuse: this.engine.snapshot(), position, receipts: this.receipts };
+    return { integrity: this.integrity(), market: this.market, quote: this.quote || null, fuse: this.engine.snapshot(), position, receipts: this.receipts };
   }
 
   integrity() {
@@ -201,7 +262,7 @@ export class Runtime {
     const suffix = cluster === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(cluster)}`;
     const base = this.env.SOLSCAN_BASE_URL || 'https://solscan.io';
     const link = (kind, value) => value ? `${base}/${kind}/${value}${suffix}` : null;
-    const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: this.receipts });
+    const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: this.receipts, pins: this.proofPins });
     const tx = (value) => ({ value: value || null, url: link('tx', value) });
     return {
       integrity: this.integrity(),
@@ -213,8 +274,10 @@ export class Runtime {
         kill: tx(txs.kill),
         flashOpen: tx(txs.flashOpen),
         flashResize: tx(txs.flashResize),
-        flashClose: tx(txs.flashClose)
-      }
+        flashClose: tx(txs.flashClose),
+        target: tx(txs.target)
+      },
+      verifiedRun: this.verifiedRunPayload()
     };
   }
 

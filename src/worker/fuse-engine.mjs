@@ -100,7 +100,7 @@ export class FuseEngine {
       } else this.confirmation = { targetUsd: null, count: 0 };
 
       const actual = await this.perp.getPosition();
-      const risk = evaluateRisk({ fuse: this.fuse, proposedTargetUsd: proposed, unrealizedPnlUsd: Number(actual.unrealizedPnlUsd || 0) });
+      const risk = evaluateRisk({ fuse: this.fuse, proposedTargetUsd: proposed, unrealizedPnlUsd: actual.unrealizedPnlUsd == null ? null : Number(actual.unrealizedPnlUsd) });
       proposed = risk.kill ? 0 : risk.targetUsd;
       const killing = curve.killed || risk.kill;
 

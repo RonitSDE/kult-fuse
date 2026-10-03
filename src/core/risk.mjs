@@ -20,7 +20,8 @@ export function evaluateRisk({ fuse, proposedTargetUsd, nowSec = Math.floor(Date
     reason = Reason.RISK_CAP_CLAMP;
   }
 
-  if (fuse.policy.lossStopUsd > 0 && unrealizedPnlUsd <= -Math.abs(fuse.policy.lossStopUsd)) {
+  // A missing venue P&L must not look like a flat book. Only a real number can trip the stop.
+  if (fuse.policy.lossStopUsd > 0 && unrealizedPnlUsd != null && Number.isFinite(Number(unrealizedPnlUsd)) && Number(unrealizedPnlUsd) <= -Math.abs(fuse.policy.lossStopUsd)) {
     targetUsd = 0;
     kill = true;
     reason = Reason.LOSS_STOP;

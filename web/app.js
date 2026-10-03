@@ -180,15 +180,20 @@ async function loadProof(){
     proofState=await api('/api/proof');
     setProofLink('#proofProgram',proofState.program);
     setProofLink('#proofPda',proofState.fuseAccount);
+    setProofLink('#proofTarget',proofState.transactions?.target);
     setProofLink('#proofKillTx',proofState.transactions?.kill);
     setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen);
     setProofLink('#proofFlashResize',proofState.transactions?.flashResize);
     setProofLink('#proofFlashClose',proofState.transactions?.flashClose);
+    const verified=proofState.verifiedRun;
+    const ready=Boolean(verified?.receipts?.length && verified.receipts.every(r=>r?.hash && r?.txSignature));
+    $('#verifiedReplayBtn')?.classList.toggle('hidden',!ready);
     renderIntegrity(proofState.integrity||{});
     if(state && !replayMode) renderLiveChainProof(state.fuse,proofState.integrity);
   }catch{
     proofFailed=true;
-    for (const id of ['#proofProgram','#proofPda','#proofKillTx','#proofFlashOpen','#proofFlashResize','#proofFlashClose']) setProofLink(id,null);
+    $('#verifiedReplayBtn')?.classList.add('hidden');
+    for (const id of ['#proofProgram','#proofPda','#proofTarget','#proofKillTx','#proofFlashOpen','#proofFlashResize','#proofFlashClose']) setProofLink(id,null);
   }
 }
 
@@ -204,9 +209,20 @@ function render(s) {
   $('#probDial').style.setProperty('--p',Math.max(0,Math.min(100,pDisplay??0)));
   $('#target').textContent=money(f.desiredExposureUsd); $('#flowTarget').textContent=money(f.desiredExposureUsd);
   $('#filled').textContent=money(p.exposureUsd); $('#flowFilled').textContent=money(p.exposureUsd);
+  if($('#perpSide')) $('#perpSide').textContent=`SOL-PERP ${(p.side||'long').toUpperCase()}`;
   $('#cap').textContent=money(f.policy.riskCapUsd); $('#capHero').textContent=money(f.policy.riskCapUsd);
   $('#kill').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`; $('#killHero').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`;
-  $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—'; $('#pnl').textContent=money(p.unrealizedPnlUsd||0,2);
+  $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—';
+  $('#pnl').textContent=p.unrealizedPnlUsd==null?'—':money(p.unrealizedPnlUsd,2);
+  const stop=Number(f.policy?.lossStopUsd||0);
+  if($('#lossStopNote')) $('#lossStopNote').textContent=stop>0?`Loss stop: the worker closes if Flash P&L reaches −$${stop}. Fuse does not calculate that P&L.`:'No loss stop is configured.';
+  const q=s.quote;
+  if($('#liveQuote')){
+    if(q?.bid!=null && q?.ask!=null){
+      const mid=((Number(q.bid)+Number(q.ask))/2)*100;
+      $('#liveQuote').textContent=`${q.question||'Polymarket'}: ${mid.toFixed(1)}% · bid ${(Number(q.bid)*100).toFixed(1)}% · ask ${(Number(q.ask)*100).toFixed(1)}%`;
+    }else $('#liveQuote').textContent='Fetching Polymarket quote…';
+  }
   $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.policyHash);
   $('#expectedTarget').textContent=money(f.status==='KILLED'||pDisplay==null?0:rawTarget(f.policy,Math.round(pDisplay*100)));
   $('#policyResult').textContent=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'WITHIN MANDATE':'VIOLATION';
@@ -220,11 +236,12 @@ function render(s) {
   $('#newFuseBtn').disabled=!op||!['KILLED','SETTLED'].includes(f.status);
   $('#operatorBtn').textContent=op?'Operator · signed in':'Operator';
 
-  if(sig){
-    $('#bid').textContent=pct(sig.bid*100); $('#ask').textContent=pct(sig.ask*100); $('#spread').textContent=`${sig.spreadBps} bps`; $('#sequence').textContent=f.oracleSequence;
-    $('#signalQuality').textContent=sig.quality?`${sig.qualityReason} SIGNAL`:`${sig.qualityReason} — NO RISK ↑`;
-    $('#signalQuality').style.color=sig.quality?'var(--lime)':'var(--amber)';
-    $('#flowSource').textContent=String(sig.source||'EVENT SOURCE').split(':')[0].toUpperCase();
+  const book=sig||(q?.bid!=null?{bid:q.bid,ask:q.ask,spreadBps:q.spreadBps,quality:true,qualityReason:'LIVE',source:q.source}:null);
+  if(book){
+    $('#bid').textContent=pct(book.bid*100); $('#ask').textContent=pct(book.ask*100); $('#spread').textContent=book.spreadBps==null?'—':`${book.spreadBps} bps`; $('#sequence').textContent=f.oracleSequence;
+    $('#signalQuality').textContent=book.quality?`${book.qualityReason} SIGNAL`:`${book.qualityReason} — NO RISK ↑`;
+    $('#signalQuality').style.color=book.quality?'var(--lime)':'var(--amber)';
+    $('#flowSource').textContent=String(book.source||'EVENT SOURCE').split(':')[0].toUpperCase();
   }else{
     $('#bid').textContent='—';$('#ask').textContent='—';$('#spread').textContent='—';$('#sequence').textContent=f.oracleSequence||0;$('#signalQuality').textContent='AWAITING SIGNAL';$('#flowSource').textContent=String(s.integrity?.eventSource||'').toUpperCase();
   }
@@ -247,7 +264,7 @@ function render(s) {
         nonce:String(latest.sequence),
         hash:latest.hash,
         tx:latest.txSignature?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature)}:(latest.chain?.txs?.at(-1)?{value:latest.chain.txs.at(-1).signature,url:explorerUrl('tx',latest.chain.txs.at(-1).signature)}:txForKind(latest.reason==='KILL_PROBABILITY'||latest.reason==='EMERGENCY_KILL'?'kill':'open')),
-        verdict:'PASS',
+        verdict:latest.txSignature?'PASS':'WAITING',
         raw:JSON.stringify(latest,null,2)
       });
     }else if(curve){
@@ -278,7 +295,7 @@ function applyReplayStep(step,index){
   const actual=step.kind==='rejected'||step.kind==='closed'||step.kind==='kill'?0:permitted;
   const rejected=step.kind==='rejected'||(requested>permitted);
   renderCurve(f,bps,killed?{killed:true,permitted:0}:undefined);
-  $('#curveMode').textContent=`REPLAY ${index+1}/${REPLAY_STEPS.length}`;
+  $('#curveMode').textContent=`SIMULATION ${index+1}/${REPLAY_STEPS.length}`;
   $('#curveNote').textContent=step.title;
   $('#probability').textContent=pct(step.p);
   $('#flowP').textContent=pct(step.p);
@@ -309,8 +326,8 @@ function applyReplayStep(step,index){
     hash:f.policyHash,
     hashLabel:'POLICY HASH',
     tx,
-    verdict:rejected?'REJECTED':'PASS',
-    raw:JSON.stringify({step:index+1,probability:step.p,permittedUsd:permitted,requestedUsd:requested,actualUsd:actual,riskCapUsd:f.policy.riskCapUsd,policyHash:f.policyHash,solana:tx?.value||null,verdict:rejected?'REJECTED':'PASS'},null,2)
+    verdict:rejected?'REJECTED':'SIMULATION',
+    raw:JSON.stringify({mode:'simulation',step:index+1,probability:step.p,permittedUsd:permitted,requestedUsd:requested,actualUsd:actual,riskCapUsd:f.policy.riskCapUsd,policyHash:f.policyHash,solana:tx?.value||null,verdict:rejected?'REJECTED':'SIMULATION'},null,2)
   });
   $('#featuredReceipt').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -322,20 +339,74 @@ function stopReplay(){
   $('#killMoment')?.classList.add('hidden');
   $('#curveMode').textContent='LIVE POLICY';
   $('#curveNote').textContent='The marker sits on the committed curve. Exposure is the step the program will accept, not a size the agent picks.';
-  $('#replayBtn').textContent='REPLAY VERIFIED RUN';
+  $('#replayBtn').textContent='SIMULATION';
+  if($('#verifiedReplayBtn') && !replayTimer) $('#verifiedReplayBtn').textContent='VERIFIED REPLAY';
   if(state) render(state);
+}
+
+function applyVerifiedReceipt(receipt,index,total){
+  const f=state.fuse;
+  const bps=Number(receipt.observedProbabilityBps);
+  const permitted=Number(receipt.desiredExposureAfterUsd);
+  const actual=Number(receipt.filledExposureAfterUsd);
+  const killed=permitted===0;
+  renderCurve(f,bps,killed?{killed:true,permitted:0}:undefined);
+  $('#curveMode').textContent=`VERIFIED REPLAY ${index+1}/${total}`;
+  $('#curveNote').textContent=String(receipt.reason||'RECEIPT').replaceAll('_',' ');
+  $('#probability').textContent=pct(bps/100);
+  $('#flowP').textContent=pct(bps/100);
+  $('#target').textContent=money(permitted,0);
+  $('#filled').textContent=money(actual,0);
+  $('#policyResult').textContent='PASS';
+  $('#policyResult').className='green';
+  $('#statusBadge').textContent=killed?'KILLED':'OPEN';
+  $('#statusBadge').className=`status-pill ${killed?'killed':'open'}`;
+  $('#killMoment').classList.toggle('hidden',!killed);
+  $('#rejectLine').classList.add('hidden');
+  showFeatured({
+    prob:pct(bps/100),
+    permitted:money(permitted,0),
+    requested:money(permitted,0),
+    actual:money(actual,0),
+    cap:money(f.policy.riskCapUsd,0),
+    nonce:String(receipt.sequence),
+    hash:receipt.hash,
+    hashLabel:'RECEIPT HASH',
+    tx:{value:receipt.txSignature,url:explorerUrl('tx',receipt.txSignature)},
+    verdict:'PASS',
+    raw:JSON.stringify(receipt,null,2)
+  });
+}
+
+function startVerified(){
+  const receipts=proofState?.verifiedRun?.receipts||[];
+  if(!receipts.length || !receipts.every(r=>r?.hash && r?.txSignature)){
+    $('#verifiedReplayBtn')?.classList.add('hidden');
+    toast('Verified replay needs receipts and transaction signatures','bad');
+    return;
+  }
+  replayMode=true;
+  let i=0;
+  $('#verifiedReplayBtn').textContent='REPLAYING…';
+  applyVerifiedReceipt(receipts[0],0,receipts.length);
+  clearInterval(replayTimer);
+  replayTimer=setInterval(()=>{
+    i+=1;
+    if(i>=receipts.length){clearInterval(replayTimer);replayTimer=null;$('#verifiedReplayBtn').textContent='VERIFIED REPLAY';return;}
+    applyVerifiedReceipt(receipts[i],i,receipts.length);
+  },1600);
 }
 
 function startReplay(){
   if(!state?.fuse?.policy){toast('Waiting for the committed policy','bad');return;}
   replayMode=true;
   let i=0;
-  $('#replayBtn').textContent='REPLAYING…';
+  $('#replayBtn').textContent='SIMULATING…';
   applyReplayStep(REPLAY_STEPS[0],0);
   clearInterval(replayTimer);
   replayTimer=setInterval(()=>{
     i+=1;
-    if(i>=REPLAY_STEPS.length){clearInterval(replayTimer);replayTimer=null;$('#replayBtn').textContent='REPLAY VERIFIED RUN';return;}
+    if(i>=REPLAY_STEPS.length){clearInterval(replayTimer);replayTimer=null;$('#replayBtn').textContent='SIMULATION';return;}
     applyReplayStep(REPLAY_STEPS[i],i);
   },1600);
 }
@@ -379,6 +450,7 @@ $('#newFuseBtn').onclick=async()=>{await mutate('/api/fuse/new',{}, {quiet:true}
 $('#operatorBtn').onclick=operatorLogin;
 $('#watchLiveBtn').onclick=()=>stopReplay();
 $('#replayBtn').onclick=()=>{if(replayTimer)stopReplay();else startReplay();};
+$('#verifiedReplayBtn').onclick=()=>{if(replayTimer)stopReplay();else startVerified();};
 $('#verifyBtn2').onclick=runVerifier;$('#closeVerify').onclick=()=>$('#verifySection').classList.add('hidden');
 
 Promise.all([refresh(),loadProof()]).catch(e=>toast(e.message,'bad'));

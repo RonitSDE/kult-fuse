@@ -1,0 +1,17 @@
+{
+  "label": "Fuse authorization on devnet. Flash open, resize, and close did not land because the live markets are not delegated.",
+  "network": "devnet",
+  "fuse": "Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf",
+  "openUsd": 15,
+  "resizeUsd": 25,
+  "residualUsd": null,
+  "flashStatus": "open_position is deprecated. open_position_er was simulated on the only initialized SOL market (SOL/JitoSOL long, 7d8RYysim2P1jVJ86NTQ7rUtehmro1L8xxAMFq8pbq15) and returned InstructionNotAllowed. The market and pool are not delegated to the rollup; delegate_market and delegate_pool are admin-only. No open, resize, or close signature confirmed.",
+  "recordedAt": "2026-10-04T00:00:00.000Z",
+  "transactions": {
+    "create": "57PkkfhowF8eZygC92VKk2ixkSkfRoNBN9wqjD6Xn9eLWvYjoruS16aXKBeEEHqf6Hi8hU4z2gzPLQnkgtdbqSAQ",
+    "arm": "5cahRvvKGtDx62TgBT35uPwDthxRtsxX4BoBrFxVdPEMua9U7JszLvDd3qB1yz3gHR5Pm24m6BXLXuZxDsBiXN1U",
+    "target": "vzvQAWh2BLRgaTLCFFTGNrVU1VG96b1Jiob2Eh8y2U8MkdEs8smZxir8PhuktVg3LtLsmM8o7kecLYNFrh3SWjk",
+    "kill": "2V7uzwpAoc866BJNQm3qs7waMKKsr1BZWGg2wN4XGTByS4Z8EjREgo96Hb9QhKzjfZXwkxDMgeLzeXTnehJ8RB2Q"
+  },
+  "receipts": []
+}
