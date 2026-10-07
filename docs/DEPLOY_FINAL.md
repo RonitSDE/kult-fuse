@@ -119,6 +119,8 @@ The dashboard in `web/` can be served from Cloudflare Pages while the backend st
 4. On Render, set `PUBLIC_URL` to the `https://<project>.pages.dev` address.
 5. Confirm `https://<project>.pages.dev/healthz` returns `"onchain": true`, then sign in as operator from the Pages URL.
 
+To upload from a checkout instead of connecting the repo, run `npx wrangler pages deploy` from the repo root; `wrangler.toml` supplies the project name, output directory and `BACKEND_URL`.
+
 The Render service must stay running: it holds the keys, the worker and the `.data` disk.
 
 ## 8. Final release gate

@@ -1,0 +1,7 @@
+# Cloudflare Pages: static dashboard from web/, API proxied by functions/_middleware.js.
+name = "kult-fuse"
+pages_build_output_dir = "web"
+compatibility_date = "2026-10-01"
+
+[vars]
+BACKEND_URL = "https://kult-fuse-qep5.onrender.com"
