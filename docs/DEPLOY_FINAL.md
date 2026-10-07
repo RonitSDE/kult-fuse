@@ -109,6 +109,18 @@ Health check path: `/healthz`.
 3. After the first deploy, set `PUBLIC_URL` to the `https://….onrender.com` address and `BUILD_SHA` to `git rev-parse HEAD`, then redeploy.
 4. Confirm `https://<service>.onrender.com/healthz` returns `"onchain": true` and the configured market.
 
+### Cloudflare Pages frontend (optional)
+
+The dashboard in `web/` can be served from Cloudflare Pages while the backend stays on Render. `functions/_middleware.js` forwards `/api/*` and `/healthz` to the backend, so the browser only ever talks to the Pages origin.
+
+1. In Cloudflare: **Workers & Pages** → **Create** → **Pages** → connect the repo.
+2. Framework preset **None**, build command empty, build output directory `web`, root directory `/`.
+3. Environment variables: `BACKEND_URL=https://<service>.onrender.com` and `SKIP_DEPENDENCY_INSTALL=1` (the frontend has no dependencies).
+4. On Render, set `PUBLIC_URL` to the `https://<project>.pages.dev` address.
+5. Confirm `https://<project>.pages.dev/healthz` returns `"onchain": true`, then sign in as operator from the Pages URL.
+
+The Render service must stay running: it holds the keys, the worker and the `.data` disk.
+
 ## 8. Final release gate
 
 ```bash
