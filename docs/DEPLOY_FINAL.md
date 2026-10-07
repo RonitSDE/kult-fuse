@@ -121,6 +121,8 @@ The dashboard in `web/` can be served from Cloudflare Pages while the backend st
 
 To upload from a checkout instead of connecting the repo, run `npx wrangler pages deploy` from the repo root; `wrangler.toml` supplies the project name, output directory and `BACKEND_URL`.
 
+For a manual dashboard upload, run `npm run build:pages` and upload the generated `dist/` folder (**Create** → **Pages** → **Upload assets**). It contains the dashboard and a `_worker.js` with the same proxy.
+
 The Render service must stay running: it holds the keys, the worker and the `.data` disk.
 
 ## 8. Final release gate
