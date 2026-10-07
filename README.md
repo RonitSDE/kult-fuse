@@ -12,7 +12,7 @@ KULT Fuse is a Solana execution mandate. A live prediction-market probability dr
 
 | | |
 |---|---|
-| Live app | `TODO: public URL` |
+| Live app | [https://kult-fuse-qep5.onrender.com](https://kult-fuse-qep5.onrender.com) |
 | Demo video | `TODO: video link` |
 | Fuse program (Solana devnet) | [`C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv`](https://solscan.io/account/C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv?cluster=devnet) |
 | Proof-run Fuse account | [`Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf`](https://solscan.io/account/Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf?cluster=devnet) |
@@ -117,7 +117,7 @@ Requires Node.js 22.9+, and for the program: Rust, Solana CLI and Anchor 0.31.
 
 ```bash
 npm install
-npm test                    # 22 deterministic tests
+npm test                    # 23 deterministic tests
 
 cp .env.example .env        # fill keys and operator token; market slug is in code
 npm run preflight           # checks every required setting

@@ -11,7 +11,7 @@ npm test
 npm run release:check
 ```
 
-Expected local result: **22/22 PASS** and `RELEASE CHECK PASS` (preflight needs a filled `.env`).
+Expected local result: **23/23 PASS** and `RELEASE CHECK PASS` (preflight needs a filled `.env`).
 
 ## 2. Build + test the Fuse program
 

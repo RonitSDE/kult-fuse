@@ -2,19 +2,20 @@
   "name": "KULT Fuse",
   "version": "1.2.0",
   "buildTag": "submission-2026-10-09",
-  "buildSha": "FILL_AFTER_FINAL_COMMIT",
-  "publicUrl": "FILL_AFTER_DEPLOY",
+  "buildSha": "git tag submission-2026-10-09; the running commit is reported by /healthz",
+  "publicUrl": "https://kult-fuse-qep5.onrender.com",
   "network": "solana-devnet",
   "programId": "C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv",
   "fuseAccount": "created by the server on first boot; see /api/proof",
   "proofTransactions": {
-    "create": "",
-    "arm": "",
-    "kill": "",
+    "create": "57PkkfhowF8eZygC92VKk2ixkSkfRoNBN9wqjD6Xn9eLWvYjoruS16aXKBeEEHqf6Hi8hU4z2gzPLQnkgtdbqSAQ",
+    "arm": "5cahRvvKGtDx62TgBT35uPwDthxRtsxX4BoBrFxVdPEMua9U7JszLvDd3qB1yz3gHR5Pm24m6BXLXuZxDsBiXN1U",
+    "target": "vzvQAWh2BLRgaTLCFFTGNrVU1VG96b1Jiob2Eh8y2U8MkdEs8smZxir8PhuktVg3LtLsmM8o7kecLYNFrh3SWjk",
+    "kill": "2V7uzwpAoc866BJNQm3qs7waMKKsr1BZWGg2wN4XGTByS4Z8EjREgo96Hb9QhKzjfZXwkxDMgeLzeXTnehJ8RB2Q",
     "flashOpen": "",
     "flashResize": "",
     "flashClose": ""
   },
-  "liveProof": "Solana devnet Fuse program + Flash Trade devnet execution, driven by live Polymarket data",
+  "liveProof": "Solana devnet Fuse program authorizations driven by live Polymarket data. Flash Trade devnet open/resize/close did not land (market not delegated); see docs/devnet-proof.json",
   "eventSource": "Polymarket live order book"
 }

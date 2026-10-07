@@ -28,8 +28,9 @@ KULT Fuse is not another prediction market, perp DEX or AI trading bot. The prod
 
 ## Live proof points
 - Live Polymarket probability drives the target: 60–69.99% → $300, 70–79.99% → $420
-- Probability below 35% → absorbing onchain kill → position closed to $0 on Flash Trade devnet
-- Every commitment, kill and fill is a Solana devnet transaction linked from its receipt
+- Probability below 35% → absorbing onchain kill; the only permitted action afterwards is closing to $0
+- Fuse create, arm, target and kill are confirmed Solana devnet transactions linked from the Chain Proof panel
+- Flash Trade devnet fills have not landed: the live devnet market is not delegated to the rollup (Flash-admin only), so no venue signatures are claimed
 - Independent verifier → policy compliance verified
 
 ## Built with
@@ -40,6 +41,6 @@ Solana is the coordination and proof layer: a compact policy account commits the
 
 ## Links
 - Program (devnet): https://solscan.io/account/C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv?cluster=devnet
-- Live app: TODO
+- Live app: https://kult-fuse-qep5.onrender.com
 - Demo video: TODO
 - Source: https://github.com/RonitSDE/kult-fuse
