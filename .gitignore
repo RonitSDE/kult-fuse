@@ -2,6 +2,6 @@
 .data/
 node_modules/
 target/
-dist/
+.wrangler/
 .DS_Store
 *.log

@@ -1,7 +1,12 @@
-# Cloudflare Pages: static dashboard from web/, API proxied by functions/_middleware.js.
-name = "kult-fuse"
-pages_build_output_dir = "web"
+# Cloudflare Worker: static dashboard from web/, API proxied by cloudflare/worker.js.
+name = "kult-flux"
+main = "cloudflare/worker.js"
 compatibility_date = "2026-10-01"
+
+[assets]
+directory = "./web"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/healthz"]
 
 [vars]
 BACKEND_URL = "https://kult-fuse-qep5.onrender.com"
