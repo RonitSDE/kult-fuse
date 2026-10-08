@@ -12,15 +12,19 @@ import { AnchorFuseClient } from '../adapters/store/anchor-fuse-client.mjs';
 
 const TERMINAL = ['KILLED', 'SETTLED'];
 
+// A Solana signature is 64 bytes, which is 86 to 88 base58 characters. Anything else
+// (a venue order id, a placeholder) must never be published as an explorer link.
+export const isSignature = (value) => typeof value === 'string' && /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(value);
+
 // Live chain and venue signatures win. Pinned PROOF_* env values are only a fallback
 // for a process whose local receipt log has not yet recorded that transaction.
 export function proofTransactions({ env = {}, chain = null, fuse = null, receipts = [], pins = {} } = {}) {
   const txs = fuse?.chainTxs || [];
-  const lastIx = (pred) => [...txs].reverse().find(pred)?.signature || null;
-  const lastReceipt = (pred) => [...receipts].reverse().find((r) => pred(r) && r.txSignature)?.txSignature || null;
-  const pick = (live, pinned) => live || pinned || null;
+  const lastIx = (pred) => [...txs].reverse().find((t) => pred(t) && isSignature(t.signature))?.signature || null;
+  const lastReceipt = (pred) => [...receipts].reverse().find((r) => pred(r) && isSignature(r.txSignature))?.txSignature || null;
+  const pick = (live, pinned) => [live, pinned].find(isSignature) || null;
   return {
-    create: pick(chain?.createTx || lastIx((t) => t.ix === 'init_fuse'), env.PROOF_CREATE_TX || pins.create),
+    create: pick(isSignature(chain?.createTx) ? chain.createTx : lastIx((t) => t.ix === 'init_fuse'), env.PROOF_CREATE_TX || pins.create),
     arm: pick(lastIx((t) => t.ix === 'arm_fuse'), env.PROOF_ARM_TX || pins.arm),
     target: pick(lastIx((t) => t.ix === 'set_target'), env.PROOF_TARGET_TX || pins.target),
     kill: pick(lastIx((t) => String(t.ix || '').startsWith('trigger_')), env.PROOF_KILL_TX || pins.kill),
@@ -191,14 +195,14 @@ export class Runtime {
       const parsed = JSON.parse(raw);
       this.proofPins = parsed.transactions || {};
       const receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
-      if (receipts.length && receipts.every((r) => r?.hash && r?.txSignature)) this.pinnedVerifiedRun = parsed;
+      if (receipts.length && receipts.every((r) => r?.hash && isSignature(r?.txSignature))) this.pinnedVerifiedRun = parsed;
     } catch { /* no recorded run yet */ }
   }
 
   verifiedRunPayload() {
     const live = this.receipts || [];
     const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: live, pins: this.proofPins });
-    if (live.length && live.every((r) => r?.hash && r?.txSignature)) {
+    if (live.length && live.every((r) => r?.hash && isSignature(r?.txSignature))) {
       return { source: 'live', residualUsd: null, transactions: txs, receipts: live };
     }
     if (!this.pinnedVerifiedRun) return null;

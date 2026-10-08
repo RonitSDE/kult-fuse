@@ -4,6 +4,7 @@ const money = (n, decimals) => {
   return `${v < 0 ? '-' : ''}$${Math.abs(v).toFixed(d)}`;
 };
 const short = (h) => h ? `${String(h).slice(0,8)}…${String(h).slice(-8)}` : '—';
+const isSignature = (v) => typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(v);
 const pct = (x, d=1) => Number(x || 0).toFixed(d) + '%';
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let state = null;
@@ -89,7 +90,7 @@ function explorerUrl(kind,value){
 
 function receiptTxLink(r){
   const links=[];
-  if(r.txSignature) links.push(`<a href="${explorerUrl('tx',r.txSignature)}" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`);
+  if(isSignature(r.txSignature)) links.push(`<a href="${explorerUrl('tx',r.txSignature)}" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`);
   const anchored=r.chain?.txs?.filter(t=>t.ix==='record_fill').at(-1)||r.chain?.txs?.at(-1);
   if(anchored) links.push(`<a href="${explorerUrl('tx',anchored.signature)}" target="_blank" rel="noreferrer">ON-CHAIN ↗</a>`);
   return links.join(' ');
@@ -186,7 +187,7 @@ async function loadProof(){
     setProofLink('#proofFlashResize',proofState.transactions?.flashResize);
     setProofLink('#proofFlashClose',proofState.transactions?.flashClose);
     const verified=proofState.verifiedRun;
-    const ready=Boolean(verified?.receipts?.length && verified.receipts.every(r=>r?.hash && r?.txSignature));
+    const ready=Boolean(verified?.receipts?.length && verified.receipts.every(r=>r?.hash && isSignature(r?.txSignature)));
     $('#verifiedReplayBtn')?.classList.toggle('hidden',!ready);
     renderIntegrity(proofState.integrity||{});
     if(state && !replayMode) renderLiveChainProof(state.fuse,proofState.integrity);
@@ -263,8 +264,8 @@ function render(s) {
         cap:money(f.policy.riskCapUsd),
         nonce:String(latest.sequence),
         hash:latest.hash,
-        tx:latest.txSignature?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature)}:(latest.chain?.txs?.at(-1)?{value:latest.chain.txs.at(-1).signature,url:explorerUrl('tx',latest.chain.txs.at(-1).signature)}:txForKind(latest.reason==='KILL_PROBABILITY'||latest.reason==='EMERGENCY_KILL'?'kill':'open')),
-        verdict:latest.txSignature?'PASS':'WAITING',
+        tx:isSignature(latest.txSignature)?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature)}:(latest.chain?.txs?.at(-1)?{value:latest.chain.txs.at(-1).signature,url:explorerUrl('tx',latest.chain.txs.at(-1).signature)}:txForKind(latest.reason==='KILL_PROBABILITY'||latest.reason==='EMERGENCY_KILL'?'kill':'open')),
+        verdict:isSignature(latest.txSignature)?'PASS':'WAITING',
         raw:JSON.stringify(latest,null,2)
       });
     }else if(curve){
@@ -372,7 +373,7 @@ function applyVerifiedReceipt(receipt,index,total){
     nonce:String(receipt.sequence),
     hash:receipt.hash,
     hashLabel:'RECEIPT HASH',
-    tx:{value:receipt.txSignature,url:explorerUrl('tx',receipt.txSignature)},
+    tx:isSignature(receipt.txSignature)?{value:receipt.txSignature,url:explorerUrl('tx',receipt.txSignature)}:null,
     verdict:'PASS',
     raw:JSON.stringify(receipt,null,2)
   });
@@ -380,7 +381,7 @@ function applyVerifiedReceipt(receipt,index,total){
 
 function startVerified(){
   const receipts=proofState?.verifiedRun?.receipts||[];
-  if(!receipts.length || !receipts.every(r=>r?.hash && r?.txSignature)){
+  if(!receipts.length || !receipts.every(r=>r?.hash && isSignature(r?.txSignature))){
     $('#verifiedReplayBtn')?.classList.add('hidden');
     toast('Verified replay needs receipts and transaction signatures','bad');
     return;
