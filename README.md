@@ -12,7 +12,8 @@ KULT Fuse is a Solana execution mandate. A live prediction-market probability dr
 
 | | |
 |---|---|
-| Live app | [https://kult-fuse-qep5.onrender.com](https://kult-fuse-qep5.onrender.com) |
+| Live app | [https://kult-flux.rj838486.workers.dev](https://kult-flux.rj838486.workers.dev) |
+| Backend health | [https://kult-fuse-qep5.onrender.com/healthz](https://kult-fuse-qep5.onrender.com/healthz) |
 | Demo video | `TODO: video link` |
 | Fuse program (Solana devnet) | [`C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv`](https://solscan.io/account/C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv?cluster=devnet) |
 | Proof-run Fuse account | [`Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf`](https://solscan.io/account/Cxcfb6SnTTGJCffVX5TqncVgJGV69n9aKv8FATJr5Mhf?cluster=devnet) |

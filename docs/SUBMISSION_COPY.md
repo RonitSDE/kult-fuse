@@ -41,6 +41,6 @@ Solana is the coordination and proof layer: a compact policy account commits the
 
 ## Links
 - Program (devnet): https://solscan.io/account/C43aRCCQyAw28vCZ4GRTr8yPt7dTc8CbiY26VdZRRcEv?cluster=devnet
-- Live app: https://kult-fuse-qep5.onrender.com
+- Live app: https://kult-flux.rj838486.workers.dev
 - Demo video: TODO
 - Source: https://github.com/RonitSDE/kult-fuse
