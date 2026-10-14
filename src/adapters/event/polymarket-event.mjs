@@ -58,15 +58,22 @@ export class PolymarketEventSource {
   async read() {
     if (!this.info) await this.init();
     const book = await this.getJson(`${this.clobUrl}/book?token_id=${encodeURIComponent(this.info.tokenId)}`);
-    const prices = (side) => (book[side] || []).map((l) => Number(l.price)).filter((p) => Number.isFinite(p));
-    const bids = prices('bids');
-    const asks = prices('asks');
+    const levels = (side) => (book[side] || []).map((l) => ({ price: Number(l.price), size: Number(l.size) })).filter((l) => Number.isFinite(l.price));
+    const bids = levels('bids');
+    const asks = levels('asks');
     if (!bids.length || !asks.length) throw new Error(`Polymarket book for ${this.info.slug} has no ${!bids.length ? 'bids' : 'asks'}`);
+    const bid = Math.max(...bids.map((l) => l.price));
+    const ask = Math.min(...asks.map((l) => l.price));
+    // USD resting at the best level on each side; a thin top of book is not a usable signal.
+    const depth = (ls, px) => ls.filter((l) => l.price === px).reduce((sum, l) => sum + (Number.isFinite(l.size) ? l.size * l.price : 0), 0);
     this.sequence += 1;
     return {
-      bid: Math.max(...bids),
-      ask: Math.min(...asks),
-      observedAtMs: Date.now(),
+      bid,
+      ask,
+      bidDepthUsd: depth(bids, bid),
+      askDepthUsd: depth(asks, ask),
+      // The CLOB stamps each book snapshot; age is measured from that, not from when we fetched it.
+      observedAtMs: Number(book.timestamp) > 0 ? Number(book.timestamp) : Date.now(),
       sequence: this.sequence,
       source: `polymarket:${this.info.slug}`
     };

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "type": "STEP",
+  "eventMarket": "BOUND_AT_RUNTIME",
+  "outcomeId": "YES",
+  "consequence": "SOL-PERP-LONG",
+  "steps": [
+    { "pBps": 3500, "exposureUsd": 10 },
+    { "pBps": 5000, "exposureUsd": 15 },
+    { "pBps": 6000, "exposureUsd": 25 },
+    { "pBps": 8000, "exposureUsd": 30 }
+  ],
+  "killBelowBps": 3500,
+  "riskCapUsd": 30,
+  "maxLeverageBps": 20000,
+  "lossStopUsd": 5,
+  "hysteresisBps": 100,
+  "confirmationCount": 2,
+  "minRebalanceUsd": 2,
+  "maxOracleAgeSec": 20,
+  "maxSpreadBps": 1200,
+  "expiryTs": 1893456000,
+  "venue": "DRIFT",
+  "marketId": "SOL-PERP"
+}

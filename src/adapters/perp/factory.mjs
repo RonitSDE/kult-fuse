@@ -1,5 +1,6 @@
 import { DriverPerpAdapter } from './driver-perp.mjs';
 import { FlashPerpAdapter } from './flash-perp.mjs';
+import { DriftPerpAdapter } from './drift-perp.mjs';
 
 export async function makePerpAdapter(env = process.env) {
   // `paper` was the removed local simulator. A stale host env must not take the process down.
@@ -7,6 +8,19 @@ export async function makePerpAdapter(env = process.env) {
   const mode = requested === 'paper' ? 'flash' : requested;
   if (requested === 'paper') console.warn('PERP_ADAPTER=paper is no longer supported; using flash');
   if (mode === 'driver') return new DriverPerpAdapter({ baseUrl: env.PERP_DRIVER_URL, token: env.PERP_DRIVER_TOKEN, symbol: env.PERP_SYMBOL || 'SOL-PERP' });
+  if (mode === 'drift') {
+    const adapter = new DriftPerpAdapter({
+      env: env.DRIFT_ENV || 'devnet',
+      rpcUrl: env.DRIFT_RPC_URL || env.SOLANA_RPC_URL,
+      privateKeyJson: env.DRIFT_PRIVATE_KEY_JSON,
+      marketIndex: Number(env.DRIFT_MARKET_INDEX || 0),
+      symbol: env.PERP_SYMBOL || 'SOL-PERP',
+      minOrderUsd: Number(env.DRIFT_MIN_ORDER_USD || 1),
+      fillTimeoutMs: Number(env.DRIFT_FILL_TIMEOUT_MS || 20000)
+    });
+    await adapter.init();
+    return adapter;
+  }
   if (mode === 'flash') {
     const adapter = new FlashPerpAdapter({
       rpcUrl: env.SOLANA_RPC_URL,

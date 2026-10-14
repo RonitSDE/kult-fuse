@@ -114,7 +114,7 @@ function renderReceipts(receipts=[]) {
     const delta=Number(r.filledExposureAfterUsd)-Number(r.actualExposureBeforeUsd);
     const d=document.createElement('div');d.className='receipt';
     const deltaClass=r.reason==='KILL_PROBABILITY'||r.reason==='EMERGENCY_KILL'?'kill':delta>=0?'up':'down';
-    d.innerHTML=`<div><b>${r.reason.replaceAll('_',' ')}</b><small>P ${(r.observedProbabilityBps/100).toFixed(1)}% · target ${money(r.desiredExposureAfterUsd)} · actual ${money(r.filledExposureAfterUsd)}</small><code>${short(r.hash)}</code>${receiptTxLink(r)}</div><div class="delta ${deltaClass}">${delta>=0?'+':''}${money(delta)}</div>`;
+    d.innerHTML=`<div><b>${r.reason.replaceAll('_',' ')}</b><small>P ${(r.observedProbabilityBps/100).toFixed(1)}% · target ${money(r.desiredExposureAfterUsd)} · actual ${money(r.filledExposureAfterUsd)}</small><code>${short(r.hash)}</code>${receiptTxLink(r)}${r.txSignature?`<small class="${r.anchor?.status==='ANCHORED'?'':'warn'}">${r.anchor?.status==='ANCHORED'?'anchored onchain':'UNVERIFIED · not anchored'}</small>`:''}</div><div class="delta ${deltaClass}">${delta>=0?'+':''}${money(delta)}</div>`;
     el.appendChild(d);
   });
 }
@@ -189,6 +189,7 @@ async function loadProof(){
     const verified=proofState.verifiedRun;
     const ready=Boolean(verified?.receipts?.length && verified.receipts.every(r=>r?.hash && isSignature(r?.txSignature)));
     $('#verifiedReplayBtn')?.classList.toggle('hidden',!ready);
+    if(ready && !replayTimer) $('#verifiedReplayBtn').textContent=verified.source==='live'?'VERIFIED REPLAY':'RECORDED REPLAY';
     renderIntegrity(proofState.integrity||{});
     if(state && !replayMode) renderLiveChainProof(state.fuse,proofState.integrity);
   }catch{
@@ -216,12 +217,19 @@ function render(s) {
   $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—';
   $('#pnl').textContent=p.unrealizedPnlUsd==null?'—':money(p.unrealizedPnlUsd,2);
   const stop=Number(f.policy?.lossStopUsd||0);
-  if($('#lossStopNote')) $('#lossStopNote').textContent=stop>0?`Loss stop: the worker closes if Flash P&L reaches −$${stop}. Fuse does not calculate that P&L.`:'No loss stop is configured.';
+  if($('#lossStopNote')) $('#lossStopNote').textContent=stop>0?`Loss stop trigger: −$${stop} of Flash P&L including fees. The close fills at market, so the realized loss can exceed $${stop}. Fuse does not calculate that P&L.`:'No loss stop is configured.';
+  const ls=f.lossStop, lsEl=$('#lossStopEvidence');
+  if(lsEl){
+    lsEl.classList.toggle('hidden',!ls);
+    if(ls) lsEl.innerHTML=`<b>Loss stop fired</b> ${new Date(ls.triggeredAt).toLocaleString()} at P&amp;L ${money(ls.triggerPnlUsd,2)} (trigger ${money(ls.thresholdUsd,2)}) on ${money(ls.positionUsd)}. Close receipt <code>${short(ls.closeReceiptHash)}</code> · ${isSignature(ls.closeTxSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',ls.closeTxSignature)}">close tx ${short(ls.closeTxSignature)}</a>`:'no close transaction recorded'} · residual ${money(ls.residualUsd)}.`;
+  }
+  const va=s.integrity?.venueAuthority;
+  if($('#authorityNote')&&va) $('#authorityNote').innerHTML=va.bound?`<b>Venue authority bound</b> to Fuse limits.`:`<b>Venue authority not bound.</b> ${va.limitation}`;
   const q=s.quote;
   if($('#liveQuote')){
     if(q?.bid!=null && q?.ask!=null){
       const mid=((Number(q.bid)+Number(q.ask))/2)*100;
-      $('#liveQuote').textContent=`${q.question||'Polymarket'}: ${mid.toFixed(1)}% · bid ${(Number(q.bid)*100).toFixed(1)}% · ask ${(Number(q.ask)*100).toFixed(1)}%`;
+      $('#liveQuote').textContent=`${q.question||'Polymarket'}: ${mid.toFixed(1)}% · bid ${(Number(q.bid)*100).toFixed(1)}% · ask ${(Number(q.ask)*100).toFixed(1)}% · spread ${q.spreadBps} bps · ${Number(q.ageSec).toFixed(0)}s old`;
     }else $('#liveQuote').textContent='Fetching Polymarket quote…';
   }
   $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.policyHash);
@@ -237,10 +245,14 @@ function render(s) {
   $('#newFuseBtn').disabled=!op||!['KILLED','SETTLED'].includes(f.status);
   $('#operatorBtn').textContent=op?'Operator · signed in':'Operator';
 
-  const book=sig||(q?.bid!=null?{bid:q.bid,ask:q.ask,spreadBps:q.spreadBps,quality:true,qualityReason:'LIVE',source:q.source}:null);
+  // The latest quote wins over the worker's last accepted tick, so a frozen feed shows its real age.
+  const book=q?.bid!=null?q:sig;
+  $('#quoteAge').textContent=book?.ageSec==null?'—':`${Number(book.ageSec).toFixed(0)}s`;
+  $('#quoteDepth').textContent=book?.depthUsd==null?'—':money(book.depthUsd,0);
+  $('#signalExplain').textContent=book?.explain||'Waiting for a quote.';
   if(book){
     $('#bid').textContent=pct(book.bid*100); $('#ask').textContent=pct(book.ask*100); $('#spread').textContent=book.spreadBps==null?'—':`${book.spreadBps} bps`; $('#sequence').textContent=f.oracleSequence;
-    $('#signalQuality').textContent=book.quality?`${book.qualityReason} SIGNAL`:`${book.qualityReason} — NO RISK ↑`;
+    $('#signalQuality').textContent=book.quality?'USABLE SIGNAL':`${book.qualityReason} — NO INCREASE`;
     $('#signalQuality').style.color=book.quality?'var(--lime)':'var(--amber)';
     $('#flowSource').textContent=String(book.source||'EVENT SOURCE').split(':')[0].toUpperCase();
   }else{
@@ -429,8 +441,13 @@ async function runVerifier(){
   try{
     const v=await api('/api/verify',{}); const sec=$('#verifySection'), panel=$('#verifyPanel');
     $('#verifyHeadline').textContent=v.summary; panel.innerHTML='';
-    v.checks.forEach(c=>{const d=document.createElement('div');d.className=`verify-check ${c.ok?'ok':'bad'}`;d.innerHTML=`<i>${c.ok?'✓':'✕'}</i><b>${c.name}</b><small>${String(c.actual).slice(0,60)}</small>`;panel.appendChild(d)});
-    sec.classList.remove('hidden'); sec.scrollIntoView({behavior:'smooth',block:'center'}); toast(v.summary,v.ok?'good':'bad'); return v;
+    const esc=(t)=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    v.checks.forEach(c=>{const d=document.createElement('div');d.className=`verify-check ${c.ok?'ok':'bad'}`;d.innerHTML=`<i>${c.ok?'✓':'✕'}</i><b>${esc(c.name)}</b><small>${esc(String(c.actual).slice(0,60))}</small>`;panel.appendChild(d)});
+    // Only a fill that passed every chain check is labelled Verified.
+    (v.fills||[]).forEach(fl=>{const d=document.createElement('div');const ok=fl.status==='VERIFIED';d.className=`verify-check ${ok?'ok':'bad'}`;
+      d.innerHTML=`<i>${ok?'✓':'!'}</i><b>${ok?'Verified':'Unverified'} · ${esc(fl.reason.replaceAll('_',' '))}</b><small>${money(fl.positionUsd)} · residual ${money(fl.residualUsd)} · ${esc(fl.fuseStatus)} · ${new Date(fl.timestampMs).toLocaleTimeString()}</small>${isSignature(fl.txSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.txSignature)}">venue tx</a>`:''}${isSignature(fl.anchorSignature)?` <a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.anchorSignature)}">anchor tx</a>`:''}${fl.problems.length?`<small>${esc(fl.problems.join('; '))}</small>`:''}`;panel.appendChild(d)});
+    const ok=v.status==='VERIFIED';
+    sec.classList.remove('hidden'); sec.scrollIntoView({behavior:'smooth',block:'center'}); toast(v.summary,ok?'good':v.status==='NO_EXECUTION'?'good':'bad'); return v;
   }catch(e){toast(e.message,'bad');throw e}
 }
 

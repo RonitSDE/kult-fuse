@@ -15,7 +15,13 @@ export function createReceipt(fields) {
     reason: fields.reason,
     venue: fields.venue,
     venueRef: fields.venueRef || null,
+    // Which Solana cluster the venue transaction lives on; the Fuse anchor may be on another.
+    venueCluster: fields.venueCluster ?? null,
     txSignature: fields.txSignature || null,
+    // Fuse state, venue P&L (fees included) and target-minus-filled residual at the moment of the fill.
+    fuseStatus: fields.fuseStatus ?? null,
+    unrealizedPnlUsd: fields.unrealizedPnlUsd ?? null,
+    residualUsd: fields.residualUsd ?? null,
     policyHash: fields.policyHash,
     timestampMs: fields.timestampMs || Date.now()
   };
@@ -28,8 +34,8 @@ export function verifyReceiptChain(receipts, expectedPolicyHash) {
     const r = receipts[i];
     if (r.prevReceiptHash !== prev) return { ok: false, index: i, error: 'prevReceiptHash mismatch' };
     if (r.policyHash !== expectedPolicyHash) return { ok: false, index: i, error: 'policyHash mismatch' };
-    // `chain` holds onchain signatures added after hashing; it is not part of the committed body.
-    const { hash, chain, ...body } = r;
+    // `chain` and `anchor` hold onchain results added after hashing; they are not part of the committed body.
+    const { hash, chain, anchor, ...body } = r;
     if (sha256Hex(body) !== hash) return { ok: false, index: i, error: 'receipt hash mismatch' };
     prev = hash;
   }

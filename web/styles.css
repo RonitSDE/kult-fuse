@@ -46,3 +46,6 @@
 .operator-drawer summary{cursor:pointer;letter-spacing:.08em}
 @media(max-width:1050px){.curve-readout,.receipt-fields{grid-template-columns:1fr 1fr}.curve-stage .curve{grid-template-columns:repeat(6,minmax(120px,1fr));overflow-x:auto}}
 @media(max-width:720px){.curve-readout,.receipt-fields{grid-template-columns:1fr}.receipt-fields .span-field{grid-column:auto}.curve-readout strong{font-size:32px}}
+
+.receipt small.warn,#authorityNote b,#lossStopEvidence b{color:var(--amber)}
+.verify-check a{font-size:12px;margin-right:8px}

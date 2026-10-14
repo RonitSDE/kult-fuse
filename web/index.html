@@ -119,8 +119,11 @@
             <div><span>ASK</span><b id="ask">—</b></div>
             <div><span>SPREAD</span><b id="spread">—</b></div>
             <div><span>SEQ</span><b id="sequence">0</b></div>
+            <div><span>QUOTE AGE</span><b id="quoteAge">—</b></div>
+            <div><span>TOP DEPTH</span><b id="quoteDepth">—</b></div>
           </div>
         </div>
+        <p class="microcopy" id="signalExplain">Waiting for a quote.</p>
         <div class="row-actions"><button id="tickBtn" class="btn ghost">POLL MARKET NOW</button></div>
         <p class="microcopy">Live order book, polled continuously. Ordinary band changes require two consistent observations. Kill conditions bypass debounce.</p>
       </article>
@@ -140,6 +143,8 @@
           <div><span>FLASH P&amp;L</span><b id="pnl">—</b></div>
         </div>
         <p class="microcopy" id="lossStopNote">Loss stop: the worker closes if Flash P&amp;L reaches −$50. Fuse does not calculate that P&amp;L.</p>
+        <p class="microcopy hidden" id="lossStopEvidence"></p>
+        <p class="microcopy" id="authorityNote"><b>Venue authority not bound.</b> Flash Trade cannot scope the trading key to Fuse limits.</p>
         <div class="safety-strip"><i></i><span>Fail-safe: uncertainty can reduce risk, never increase it.</span></div>
         <details class="operator-drawer">
           <summary>Operator controls</summary>

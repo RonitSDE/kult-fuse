@@ -57,3 +57,65 @@ export function verifyFuse({ fuse, receipts = [] }) {
     summary: ok ? 'POLICY COMPLIANCE VERIFIED' : 'VERIFICATION FAILED'
   };
 }
+
+const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{86,88}$/;
+
+/**
+ * Checks each venue fill against the chain, not against the worker's own word.
+ * chain: { txStatus(signature, cluster?) -> { confirmed, err }, receiptHead() -> hex | null } (RPC-backed in production).
+ * `cluster` is the venue's cluster from the receipt; null means the Fuse cluster.
+ * A fill is VERIFIED only if its venue transaction and its record_fill anchor both confirmed without error,
+ * the receipt carries its Fuse state, size, timestamp and residual, and policy checks pass.
+ */
+export async function verifyExecution({ fuse, receipts = [], chain }) {
+  const policy = verifyFuse({ fuse, receipts });
+  const fills = receipts.filter((r) => r.txSignature);
+  if (!fills.length) {
+    return { ...policy, ok: false, status: 'NO_EXECUTION', summary: 'No execution to verify', fills: [] };
+  }
+
+  const confirmed = async (sig, cluster = null) => {
+    if (!SOLANA_SIGNATURE.test(String(sig || ''))) return { ok: false, why: 'not a Solana signature' };
+    try {
+      const s = await chain.txStatus(sig, cluster);
+      if (!s?.confirmed) return { ok: false, why: 'not found or unconfirmed onchain' };
+      if (s.err) return { ok: false, why: `transaction failed: ${JSON.stringify(s.err)}` };
+      return { ok: true };
+    } catch (e) { return { ok: false, why: `RPC error: ${e.message}` }; }
+  };
+
+  const out = [];
+  for (const r of fills) {
+    const problems = [];
+    const venue = await confirmed(r.txSignature, r.venueCluster);
+    if (!venue.ok) problems.push(`venue tx ${venue.why}`);
+    if (r.anchor?.status !== 'ANCHORED') problems.push(r.anchor?.status === 'FAILED' ? `anchoring failed: ${r.anchor.error}` : 'receipt not anchored onchain');
+    else {
+      const anchor = await confirmed(r.anchor.signature);
+      if (!anchor.ok) problems.push(`anchor tx ${anchor.why}`);
+    }
+    for (const field of ['fuseStatus', 'timestampMs', 'filledExposureAfterUsd', 'residualUsd']) {
+      if (r[field] == null) problems.push(`missing ${field}`);
+    }
+    out.push({
+      hash: r.hash, reason: r.reason, txSignature: r.txSignature, venueCluster: r.venueCluster ?? null, anchorSignature: r.anchor?.signature || null,
+      fuseStatus: r.fuseStatus ?? null, timestampMs: r.timestampMs, positionUsd: r.filledExposureAfterUsd,
+      residualUsd: r.residualUsd ?? null, unrealizedPnlUsd: r.unrealizedPnlUsd ?? null,
+      status: problems.length ? 'UNVERIFIED' : 'VERIFIED', problems
+    });
+  }
+
+  const checks = [...policy.checks];
+  let head = null;
+  try { head = await chain.receiptHead(); } catch (e) { head = `RPC error: ${e.message}`; }
+  const lastHash = receipts.at(-1)?.hash;
+  checks.push({ name: 'Onchain receipt head', ok: head === lastHash, expected: lastHash, actual: head });
+  const unverified = out.filter((f) => f.status !== 'VERIFIED').length;
+  checks.push({ name: 'Venue fills confirmed and anchored', ok: unverified === 0, expected: `${out.length} verified`, actual: `${out.length - unverified}/${out.length} verified` });
+
+  const policyOk = policy.checks.every((c) => c.ok);
+  const ok = checks.every((c) => c.ok);
+  const status = ok ? 'VERIFIED' : policyOk ? 'UNVERIFIED' : 'FAILED';
+  const summary = ok ? 'Verified' : policyOk ? `Unverified: ${checks.filter((c) => !c.ok).map((c) => c.name).join(', ')}` : 'Verification failed';
+  return { ok, status, summary, checks, fills: out, stats: { ...policy.stats, fills: out.length, unverified } };
+}

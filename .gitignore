@@ -5,3 +5,6 @@ target/
 .wrangler/
 .DS_Store
 *.log
+
+# Personal notes (not part of the project)
+INTERVIEW_PREP.md

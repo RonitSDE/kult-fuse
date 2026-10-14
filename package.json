@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "KULT Fuse \u2014 a Solana execution mandate: live prediction-market probability drives a perp position within an onchain-enforced policy",
+  "description": "KULT Fuse — a Solana execution mandate: live prediction-market probability drives a perp position within an onchain-enforced policy",
   "engines": {
     "node": ">=22.14"
   },
@@ -18,12 +18,15 @@
     "release:check": "node --env-file-if-exists=.env scripts/release-check.mjs",
     "anchor:init": "node --env-file-if-exists=.env scripts/init-anchor.mjs",
     "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs",
-    "smoke:polymarket": "node --env-file-if-exists=.env scripts/smoke-polymarket.mjs"
+    "smoke:polymarket": "node --env-file-if-exists=.env scripts/smoke-polymarket.mjs",
+    "proof:venue": "node --env-file-if-exists=.env scripts/venue-proof-run.mjs"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.31.1",
     "@coral-xyz/borsh": "0.31.1",
+    "@drift-labs/sdk": "2.156.0",
     "@pythnetwork/price-service-client": "1.10.0",
+    "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "1.98.4",
     "bn.js": "5.2.2",
     "camelcase": "6.3.0",

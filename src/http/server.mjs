@@ -31,7 +31,7 @@ async function api(req, res, url) {
   try {
     if (req.method === 'POST' && !PUBLIC_POSTS.has(url.pathname) && !authorized(req)) return json(res, 401, { error: 'operator token required' });
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await runtime.getState());
-    if (req.method === 'GET' && url.pathname === '/api/proof') return json(res, 200, runtime.proof());
+    if (req.method === 'GET' && url.pathname === '/api/proof') return json(res, 200, await runtime.proof());
     if (req.method === 'POST' && url.pathname === '/api/arm') return json(res, 200, await runtime.arm());
     if (req.method === 'POST' && url.pathname === '/api/kill') return json(res, 200, await runtime.kill());
     if (req.method === 'POST' && url.pathname === '/api/settle') return json(res, 200, await runtime.settle());
@@ -55,7 +55,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname === '/healthz') {
     const i = runtime.integrity();
-    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.2.0', network: i.network, market: runtime.market?.id, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quote || null, quoteError: runtime.quoteError || null, time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.2.0', network: i.network, market: runtime.market?.id, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quoteView(), quoteError: runtime.quoteError || null, time: new Date().toISOString() });
   }
   if (url.pathname.startsWith('/api/')) return api(req, res, url);
   let rel = url.pathname === '/' ? '/index.html' : url.pathname;

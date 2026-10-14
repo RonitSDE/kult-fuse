@@ -1,6 +1,6 @@
-import { makeProbabilityMark } from '../core/probability.mjs';
+import { makeProbabilityMark, explainSignal } from '../core/probability.mjs';
 import { hysteresisTarget } from '../core/policy.mjs';
-import { evaluateRisk } from '../core/risk.mjs';
+import { evaluateRisk, lossStopHit } from '../core/risk.mjs';
 import { createReceipt } from '../core/receipt.mjs';
 import { FuseStatus, Reason } from '../core/constants.mjs';
 
@@ -64,6 +64,26 @@ export class FuseEngine {
     return this.reconcile({ force: true, reason });
   }
 
+  // Venue P&L (fees included) crossed the configured stop: block increases, close, and keep the trigger evidence.
+  // The threshold is a trigger, not a guaranteed maximum loss; the close fills at whatever the venue gives.
+  async triggerLossStop(position, pnlUsd) {
+    this.fuse.lossStop = {
+      thresholdUsd: -Math.abs(this.fuse.policy.lossStopUsd),
+      triggerPnlUsd: pnlUsd,
+      positionUsd: Number(position.exposureUsd || 0),
+      markPrice: position.markPrice ?? null,
+      triggeredAt: Date.now()
+    };
+    const out = await this.kill(Reason.LOSS_STOP);
+    Object.assign(this.fuse.lossStop, {
+      closeReceiptHash: out.receipt?.hash || null,
+      closeTxSignature: out.exec?.txSignature || null,
+      residualUsd: Number(out.position?.exposureUsd || 0)
+    });
+    await this.persist(this.fuse);
+    return { ...out, lossStop: this.fuse.lossStop, ...this.snapshot() };
+  }
+
   async tick(rawObservation = null) {
     if (this.busy) return { skipped: true, reason: 'BUSY', ...this.snapshot() };
     this.busy = true;
@@ -72,16 +92,22 @@ export class FuseEngine {
         return { skipped: true, reason: `STATE_${this.fuse.status}`, ...this.snapshot() };
       }
 
+      // The loss stop reads venue P&L before anything else, so a stale quote or an oracle outage cannot delay it.
+      const actual = await this.perp.getPosition();
+      const pnl = actual.unrealizedPnlUsd == null ? null : Number(actual.unrealizedPnlUsd);
+      this.fuse.lastPnlUsd = pnl;
+      if (lossStopHit(this.fuse.policy, pnl)) return await this.triggerLossStop(actual, pnl);
+
       const raw = rawObservation || await this.eventSource.read();
       if (raw.sequence <= this.fuse.oracleSequence) throw new Error('oracle replay rejected');
       const mark = makeProbabilityMark(raw, this.fuse.policy);
       this.fuse.oracleSequence = raw.sequence;
       this.fuse.lastProbabilityBps = mark.pBps;
-      this.fuse.lastSignal = { bid: mark.bid, ask: mark.ask, spreadBps: mark.spreadBps, ageSec: mark.ageSec, quality: mark.quality, qualityReason: mark.qualityReason, source: mark.source };
+      this.fuse.lastSignal = { bid: mark.bid, ask: mark.ask, spreadBps: mark.spreadBps, ageSec: mark.ageSec, depthUsd: mark.depthUsd, observedAtMs: mark.observedAtMs, quality: mark.quality, qualityReason: mark.qualityReason, source: mark.source, explain: explainSignal(mark, this.fuse.policy, this.fuse.desiredExposureUsd) };
       this.fuse.updatedAt = Date.now();
 
       if (!mark.quality) {
-        this.fuse.lastReasonCode = mark.qualityReason === 'STALE' ? Reason.ORACLE_STALE : Reason.ORACLE_WIDE;
+        this.fuse.lastReasonCode = { STALE: Reason.ORACLE_STALE, WIDE: Reason.ORACLE_WIDE, THIN: Reason.ORACLE_THIN }[mark.qualityReason];
         await this.persist(this.fuse);
         return { skipped: true, reason: this.fuse.lastReasonCode, mark, ...this.snapshot() };
       }
@@ -99,8 +125,7 @@ export class FuseEngine {
         }
       } else this.confirmation = { targetUsd: null, count: 0 };
 
-      const actual = await this.perp.getPosition();
-      const risk = evaluateRisk({ fuse: this.fuse, proposedTargetUsd: proposed, unrealizedPnlUsd: actual.unrealizedPnlUsd == null ? null : Number(actual.unrealizedPnlUsd) });
+      const risk = evaluateRisk({ fuse: this.fuse, proposedTargetUsd: proposed, unrealizedPnlUsd: pnl });
       proposed = risk.kill ? 0 : risk.targetUsd;
       const killing = curve.killed || risk.kill;
 
@@ -198,17 +223,25 @@ export class FuseEngine {
       reason: reason || this.fuse.lastReasonCode,
       venue: actual.venue || this.fuse.policy.venue,
       venueRef: exec.venueRef,
+      venueCluster: exec.cluster || actual.cluster || null,
       txSignature: exec.txSignature,
+      fuseStatus: this.fuse.status,
+      unrealizedPnlUsd: actual.unrealizedPnlUsd ?? null,
+      residualUsd: desired - this.fuse.filledExposureUsd,
       policyHash: this.fuse.policyHash
     });
     this.fuse.lastReceiptHash = receipt.hash;
     this.fuse.lastReasonCode = receipt.reason;
+    // A fill whose receipt never reached the chain stays visible as unanchored; the verifier must not pass it.
+    receipt.anchor = { status: 'NONE' };
     if (this.chainHooks?.recordFill) {
       try {
-        await this.chain('record_fill', () => this.chainHooks.recordFill({ filledExposureUsd: this.fuse.filledExposureUsd, venueRef: exec.venueRef || exec.txSignature || '', receiptHash: receipt.hash, nonce, reason: receipt.reason }));
+        const anchorSig = await this.chain('record_fill', () => this.chainHooks.recordFill({ filledExposureUsd: this.fuse.filledExposureUsd, venueRef: exec.venueRef || exec.txSignature || '', receiptHash: receipt.hash, nonce, reason: receipt.reason }));
+        receipt.anchor = { status: 'ANCHORED', signature: anchorSig };
         this.chainWarning = null;
       } catch (e) {
         // Never re-execute a venue order merely because receipt anchoring failed. Reconciliation wins.
+        receipt.anchor = { status: 'FAILED', error: e.message };
         this.chainWarning = `receipt anchoring pending: ${e.message}`;
       }
     }

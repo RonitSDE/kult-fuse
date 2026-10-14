@@ -1,5 +1,13 @@
 import { FuseStatus, Reason } from './constants.mjs';
 
+// $lossStopUsd is a trigger, not a ceiling: the close executes at the next fill price, so realized loss can exceed it.
+export function lossStopHit(policy, unrealizedPnlUsd) {
+  // A missing venue P&L must not look like a flat book. Only a real number can trip the stop.
+  if (!(policy.lossStopUsd > 0) || unrealizedPnlUsd == null) return false;
+  const pnl = Number(unrealizedPnlUsd);
+  return Number.isFinite(pnl) && pnl <= -Math.abs(policy.lossStopUsd);
+}
+
 export function evaluateRisk({ fuse, proposedTargetUsd, nowSec = Math.floor(Date.now() / 1000), unrealizedPnlUsd = 0 }) {
   let targetUsd = Number(proposedTargetUsd);
   let reason = null;
@@ -20,8 +28,7 @@ export function evaluateRisk({ fuse, proposedTargetUsd, nowSec = Math.floor(Date
     reason = Reason.RISK_CAP_CLAMP;
   }
 
-  // A missing venue P&L must not look like a flat book. Only a real number can trip the stop.
-  if (fuse.policy.lossStopUsd > 0 && unrealizedPnlUsd != null && Number.isFinite(Number(unrealizedPnlUsd)) && Number(unrealizedPnlUsd) <= -Math.abs(fuse.policy.lossStopUsd)) {
+  if (lossStopHit(fuse.policy, unrealizedPnlUsd)) {
     targetUsd = 0;
     kill = true;
     reason = Reason.LOSS_STOP;

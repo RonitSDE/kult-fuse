@@ -7,7 +7,8 @@ import { makePerpAdapter } from '../adapters/perp/factory.mjs';
 import { policyHash, validatePolicy } from '../core/policy.mjs';
 import { initialFuse } from '../core/state.mjs';
 import { FuseEngine } from '../worker/fuse-engine.mjs';
-import { verifyFuse } from '../core/verifier.mjs';
+import { verifyExecution } from '../core/verifier.mjs';
+import { makeProbabilityMark, explainSignal } from '../core/probability.mjs';
 import { AnchorFuseClient } from '../adapters/store/anchor-fuse-client.mjs';
 
 const TERMINAL = ['KILLED', 'SETTLED'];
@@ -199,11 +200,13 @@ export class Runtime {
     } catch { /* no recorded run yet */ }
   }
 
-  verifiedRunPayload() {
+  // A replay is offered as verified only when the verifier passed it against the chain.
+  async verifiedRunPayload() {
     const live = this.receipts || [];
     const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: live, pins: this.proofPins });
-    if (live.length && live.every((r) => r?.hash && isSignature(r?.txSignature))) {
-      return { source: 'live', residualUsd: null, transactions: txs, receipts: live };
+    if (live.some((r) => r.txSignature)) {
+      const v = await this.verify();
+      if (v.status === 'VERIFIED') return { source: 'live', residualUsd: Number(this.engine.fuse.filledExposureUsd || 0), transactions: txs, receipts: live };
     }
     if (!this.pinnedVerifiedRun) return null;
     return {
@@ -219,17 +222,11 @@ export class Runtime {
     const pull = async () => {
       try {
         const raw = await this.eventSource.read();
-        const bid = Number(raw.bid);
-        const ask = Number(raw.ask);
-        const mid = (bid + ask) / 2;
         this.quote = {
           question: this.market?.question || null,
           outcome: this.market?.outcome || null,
           url: this.market?.url || null,
-          bid,
-          ask,
-          probability: mid,
-          spreadBps: mid > 0 ? Math.round(((ask - bid) / mid) * 10000) : null,
+          raw,
           source: raw.source,
           at: new Date().toISOString()
         };
@@ -242,9 +239,22 @@ export class Runtime {
     setInterval(pull, 8000).unref();
   }
 
+  // Age is computed at read time, so a quote that stopped updating visibly goes stale.
+  quoteView() {
+    if (!this.quote) return null;
+    const { raw, ...rest } = this.quote;
+    const policy = this.engine.fuse.policy;
+    const mark = makeProbabilityMark(raw, policy);
+    return {
+      ...rest, bid: mark.bid, ask: mark.ask, probability: mark.probability, spreadBps: mark.spreadBps,
+      ageSec: mark.ageSec, depthUsd: mark.depthUsd, quality: mark.quality, qualityReason: mark.qualityReason,
+      explain: explainSignal(mark, policy, this.engine.fuse.desiredExposureUsd)
+    };
+  }
+
   async getState() {
     const position = await this.perp.getPosition();
-    return { integrity: this.integrity(), market: this.market, quote: this.quote || null, fuse: this.engine.snapshot(), position, receipts: this.receipts };
+    return { integrity: this.integrity(), market: this.market, quote: this.quoteView(), fuse: this.engine.snapshot(), position, receipts: this.receipts };
   }
 
   integrity() {
@@ -257,11 +267,37 @@ export class Runtime {
       fusePda: this.activeFusePda(),
       buildTag: this.env.BUILD_TAG || 'dev',
       buildSha: this.env.BUILD_SHA || 'DEV_UNSET',
-      publicUrl: this.env.PUBLIC_URL || null
+      publicUrl: this.env.PUBLIC_URL || null,
+      venueAuthority: this.venueAuthority()
     };
   }
 
-  proof() {
+  // Flash Trade has no delegated, size-capped trading authority, so the venue key cannot be bound to Fuse limits.
+  venueAuthority() {
+    return {
+      bound: false,
+      venue: (this.env.PERP_ADAPTER || 'flash').toUpperCase(),
+      limitation: 'Not bound at the venue. Flash Trade has no delegated key scoped to a size cap or to the Fuse state, so the trading key could still open over the cap or after a kill if the worker were compromised. Fuse limits are enforced by this worker and recorded onchain; the venue does not check them. Closing is never blocked.'
+    };
+  }
+
+  chainReader() {
+    const exec = this.chainClients.exec;
+    const fuseCluster = this.env.SOLANA_CLUSTER || 'devnet';
+    // A venue on another cluster (e.g. Drift mainnet) is checked through that cluster's RPC.
+    const venueConn = this.perp?.connection;
+    return {
+      txStatus: async (sig, cluster) => {
+        const conn = cluster && cluster !== fuseCluster && venueConn ? venueConn : exec.provider.connection;
+        const { value } = await conn.getSignatureStatuses([sig], { searchTransactionHistory: true });
+        const st = value?.[0];
+        return { confirmed: Boolean(st && ['confirmed', 'finalized'].includes(st.confirmationStatus)), err: st?.err ?? null };
+      },
+      receiptHead: async () => Buffer.from((await exec.fetch()).lastReceiptHash).toString('hex')
+    };
+  }
+
+  async proof() {
     const cluster = this.env.SOLANA_CLUSTER || 'devnet';
     const suffix = cluster === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(cluster)}`;
     const base = this.env.SOLSCAN_BASE_URL || 'https://solscan.io';
@@ -281,7 +317,7 @@ export class Runtime {
         flashClose: tx(txs.flashClose),
         target: tx(txs.target)
       },
-      verifiedRun: this.verifiedRunPayload()
+      verifiedRun: await this.verifiedRunPayload()
     };
   }
 
@@ -289,5 +325,5 @@ export class Runtime {
   async arm() { return this.engine.arm(); }
   async kill() { return this.engine.kill(); }
   async settle() { return this.engine.settle(); }
-  async verify() { return verifyFuse({ fuse: this.engine.snapshot(), receipts: this.receipts }); }
+  async verify() { return verifyExecution({ fuse: this.engine.snapshot(), receipts: this.receipts, chain: this.chainReader() }); }
 }
