@@ -4,12 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#06080b" />
-  <title>KULT FUSE — Verifiable probability-controlled execution</title>
+  <title>KULT FUSE — Event-conditioned perp mandates</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div><div class="grain"></div>
-  <div id="toast" class="toast" role="status"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="connectionBanner" class="connection-banner hidden" role="alert">Backend unavailable. Live state and proof cannot be checked. <button id="retryConnection" type="button">Retry connection</button></div>
 
   <main class="shell">
     <header class="topbar">
@@ -18,7 +19,7 @@
         <span><strong>KULT FUSE</strong><small>VERIFIABLE EXECUTION MANDATE</small></span>
       </a>
       <div class="top-actions">
-        <span class="network-pill"><i></i><span id="networkLabel">DEVNET</span></span>
+        <span class="network-pill"><i></i><span id="networkLabel">CONNECTING</span></span>
         <span id="statusBadge" class="status-pill">LOADING</span>
         <button id="operatorBtn" class="operator-link">Operator</button>
       </div>
@@ -26,9 +27,9 @@
 
     <section class="hero">
       <div class="hero-copy">
-        <p class="kicker">PRECOMMITTED POLICY · THE AGENT CANNOT RESIZE IT</p>
-        <h1>52% allows $200.<br/><span>71% allows $420.</span></h1>
-        <p class="hero-sub" id="heroExample">Bitcoin probability moves from 52% to 71%. The Fuse policy, fixed before any capital moves, raises the permitted SOL-perp exposure from $200 to $420. A later drop under 35% kills the mandate. The agent cannot reopen it.</p>
+        <p class="kicker">EVENT-CONDITIONED PERP ORDER · COMMITTED ON SOLANA</p>
+        <h1>The event moves.<br/><span>The mandate decides.</span></h1>
+        <p class="hero-sub" id="heroExample">A live prediction quote proposes exposure under a mandate committed on Solana. Inspect the quote, the policy decision, and actual venue fills separately.</p>
         <div class="hero-actions">
           <button id="watchLiveBtn" class="btn primary">WATCH LIVE</button>
           <button id="replayBtn" class="btn ghost">SIMULATION</button>
@@ -36,23 +37,36 @@
         </div>
         <p class="microcopy" id="heroMarket">Loading the committed market…</p>
         <p class="microcopy" id="liveQuote">Fetching Polymarket quote…</p>
+        <p class="microcopy sync-copy" id="lastSync">Waiting for backend</p>
       </div>
       <div class="commitment-card">
         <div class="commitment-top"><span>POLICY COMMITMENT</span><span id="integrityLabel" class="proof-dot">DEVNET</span></div>
         <code id="policyHash">—</code>
         <div class="commitment-grid">
-          <div><span>HARD CAP</span><strong id="capHero">$500</strong></div>
+          <div><span>HARD CAP</span><strong id="capHero">—</strong></div>
           <div><span>KILL</span><strong id="killHero">&lt;35%</strong></div>
           <div><span>CURVE</span><strong>STEP / V1</strong></div>
-          <div><span>REPLAY</span><strong>PROTECTED</strong></div>
+          <div><span>VENUE KEY</span><strong id="authorityHero">UNBOUND</strong></div>
         </div>
       </div>
     </section>
 
+    <section class="decision-panel" aria-live="polite" aria-label="Current mandate decision">
+      <div class="decision-icon" id="decisionIcon">·</div>
+      <div><span class="eyebrow">CURRENT DECISION</span><h2 id="decisionTitle">Waiting for live state</h2><p id="decisionDetail">Connect to the backend to inspect the quote and the authorized target.</p></div>
+      <div class="decision-metrics"><div><small>PERMITTED</small><strong id="decisionPermitted">—</strong></div><div><small>VENUE ACTUAL</small><strong id="decisionActual">—</strong></div></div>
+    </section>
+
     <aside class="trust-boundary">
       <span>TRUST BOUNDARY</span>
-      <p>Fuse checks the targets submitted to it. It does not control the Flash wallet. An onchain kill blocks new Fuse exposure. The worker sends the separate Flash close.</p>
+      <p id="trustBoundaryCopy">Fuse checks submitted targets. The venue trading key is separate and can still bypass this policy; a kill requires a venue close transaction.</p>
     </aside>
+
+    <section class="decision-journal panel" aria-label="Recent decisions">
+      <div class="panel-head"><div><span class="panel-index">WORKER LOG</span><h2>Why Fuse acted—or held</h2></div><a class="mini-pill" href="/api/decisions" target="_blank" rel="noreferrer">VIEW JSON ↗</a></div>
+      <p class="microcopy">Operational decisions explain no-trade and close-pending states. They are not execution proof; venue fills require separate verification.</p>
+      <div id="decisionJournal" class="decision-journal-list" aria-live="polite">No worker decisions recorded for this mandate.</div>
+    </section>
 
     <section class="curve-stage panel" id="curveStage">
       <div class="panel-head">
@@ -69,7 +83,7 @@
       <div class="policy-explain">
         <div><span>LAST REASON</span><strong id="reason">NOOP</strong></div>
         <div><span>PERMITTED NOW</span><strong id="expectedTarget">$0</strong></div>
-        <div><span>POLICY RESULT</span><strong id="policyResult" class="green">READY</strong></div>
+        <div><span>POLICY RESULT</span><strong id="policyResult">AWAITING STATE</strong></div>
         <div><span>POLICY HASH</span><code id="receiptHash">—</code></div>
       </div>
     </section>
@@ -77,8 +91,8 @@
     <section id="killMoment" class="kill-moment hidden" aria-live="polite">
       <div>
         <span>ABSORBING KILL</span>
-        <h2 id="killMomentTitle">KILLED → position closed → mandate permanently locked.</h2>
-        <p id="rejectLine" class="hidden">The agent then requests $500. The killed mandate rejects it. Permitted exposure stays $0.</p>
+        <h2 id="killMomentTitle">Mandate killed. Confirm the venue close separately.</h2>
+        <p id="rejectLine" class="hidden">Simulation: the killed mandate rejects a reopen.</p>
       </div>
     </section>
 
@@ -89,7 +103,7 @@
         <div><span>POLICY-PERMITTED</span><b id="rfPermitted">—</b></div>
         <div><span>REQUESTED</span><b id="rfRequested">—</b></div>
         <div><span>ACTUAL EXPOSURE</span><b id="rfActual">—</b></div>
-        <div><span>RISK CAP</span><b id="rfCap">$500</b></div>
+        <div><span>RISK CAP</span><b id="rfCap">—</b></div>
         <div><span>EXECUTION NONCE</span><b id="rfNonce">—</b></div>
         <div class="span-field"><span id="rfHashLabel">RECEIPT HASH</span><code id="rfHash">—</code></div>
         <div><span>SOLANA TX</span><a id="rfTx" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
@@ -101,16 +115,16 @@
       <div class="flow-line"></div>
       <div class="flow-node active" id="flowSignal"><span>01</span><small>EVENT SIGNAL</small><strong id="flowP">—</strong><em id="flowSource">POLYMARKET</em></div>
       <div class="flow-arrow">→</div>
-      <div class="flow-node" id="flowPolicy"><span>02</span><small>POLICY</small><strong id="flowTarget">$0</strong><em>P → E VERIFIED</em></div>
+      <div class="flow-node" id="flowPolicy"><span>02</span><small>POLICY</small><strong id="flowTarget">$0</strong><em>P → E TARGET</em></div>
       <div class="flow-arrow">→</div>
       <div class="flow-node" id="flowPosition"><span>03</span><small>PERP POSITION</small><strong id="flowFilled">$0</strong><em>SOL-PERP</em></div>
       <div class="flow-arrow">→</div>
-      <div class="flow-node" id="flowProof"><span>04</span><small>PROOF</small><strong id="flowProofText">READY</strong><em>HASHED RECEIPT</em></div>
+      <div class="flow-node" id="flowProof"><span>04</span><small>PROOF</small><strong id="flowProofText">NO FILLS</strong><em>VERIFY SEPARATELY</em></div>
     </section>
 
     <section class="workspace">
       <article class="panel signal-panel">
-        <div class="panel-head"><div><span class="panel-index">01</span><h2>Event signal</h2></div><a id="marketLink" class="mini-pill" target="_blank" rel="noreferrer">LIVE</a></div>
+        <div class="panel-head"><div><span class="panel-index">01</span><h2>Event signal</h2></div><a id="marketLink" class="mini-pill" target="_blank" rel="noreferrer">WAITING</a></div>
         <h3 id="marketQuestion">Loading market…</h3>
         <div class="probability-wrap">
           <div id="probDial" class="prob-dial"><div><small id="outcomeLabel">YES</small><strong id="probability">—</strong><span id="signalQuality">AWAITING SIGNAL</span></div></div>
@@ -137,15 +151,15 @@
         </div>
         <div class="risk-meter"><div class="risk-meter-track"><i id="riskBar"></i></div><div><span>CAP UTILIZATION</span><b id="riskUtil">0%</b></div></div>
         <div class="metric-grid">
-          <div><span>HARD CAP</span><b id="cap">$500</b></div>
+          <div><span>HARD CAP</span><b id="cap">—</b></div>
           <div><span>KILL</span><b id="kill">&lt;35%</b></div>
           <div><span>MARK</span><b id="markPrice">—</b></div>
-          <div><span>FLASH P&amp;L</span><b id="pnl">—</b></div>
+          <div><span>VENUE P&amp;L</span><b id="pnl">—</b></div>
         </div>
-        <p class="microcopy" id="lossStopNote">Loss stop: the worker closes if Flash P&amp;L reaches −$50. Fuse does not calculate that P&amp;L.</p>
+        <p class="microcopy hidden" id="lossStopNote"></p>
         <p class="microcopy hidden" id="lossStopEvidence"></p>
-        <p class="microcopy" id="authorityNote"><b>Venue authority not bound.</b> Flash Trade cannot scope the trading key to Fuse limits.</p>
-        <div class="safety-strip"><i></i><span>Fail-safe: uncertainty can reduce risk, never increase it.</span></div>
+        <p class="microcopy" id="authorityNote">Venue authority not bound. The venue key can trade outside Fuse.</p>
+        <div class="safety-strip"><i></i><span>The worker does not add risk on an unusable quote. The venue key is still unbound.</span></div>
         <details class="operator-drawer">
           <summary>Operator controls</summary>
           <div class="row-actions"><button id="armBtn" class="btn ghost">ARM FUSE</button><button id="emergencyKillBtn" class="btn danger-soft">EMERGENCY KILL</button><button id="settleBtn" class="btn ghost">SETTLE</button><button id="newFuseBtn" class="btn ghost">NEW MANDATE</button></div>
@@ -155,10 +169,10 @@
       <article class="panel proof-panel">
         <div class="panel-head"><div><span class="panel-index">04</span><h2>Proof rail</h2></div><span class="mini-pill">DON'T TRUST. VERIFY.</span></div>
         <div class="proof-list">
-          <div><i id="proofCommit" class="proof-icon">✓</i><span><b>Policy committed</b><small>Curve hash fixed before execution</small></span></div>
-          <div><i id="proofCurve" class="proof-icon">✓</i><span><b>P → E bounded</b><small>Target cannot exceed authorized curve/cap</small></span></div>
-          <div><i id="proofKill" class="proof-icon">✓</i><span><b>Absorbing kill</b><small>Killed Fuse can never reopen</small></span></div>
-          <div><i id="proofReceipts" class="proof-icon muted">·</i><span><b>Receipt chain</b><small id="proofReceiptCopy">Waiting for first execution</small></span></div>
+          <div><i id="proofCommit" class="proof-icon muted">·</i><span><b>Policy committed</b><small>Curve hash fixed before execution</small></span></div>
+          <div><i id="proofCurve" class="proof-icon muted">·</i><span><b>P → E bounded</b><small>Target cannot exceed authorized curve/cap</small></span></div>
+          <div><i id="proofKill" class="proof-icon muted">·</i><span><b>Absorbing kill</b><small>Chain kill and venue close checked separately</small></span></div>
+          <div><i id="proofReceipts" class="proof-icon muted">·</i><span><b>Venue execution</b><small id="proofReceiptCopy">No fill to verify yet</small></span></div>
         </div>
         <button id="verifyBtn2" class="btn verify-wide">RUN INDEPENDENT VERIFIER</button>
       </article>
@@ -183,24 +197,28 @@
         <div><span>FUSE PDA</span><a id="proofPda" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>TARGET TX</span><a id="proofTarget" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>KILL TX</span><a id="proofKillTx" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
-        <div><span>FLASH OPEN</span><a id="proofFlashOpen" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
-        <div><span>FLASH RESIZE</span><a id="proofFlashResize" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
-        <div><span>FLASH CLOSE</span><a id="proofFlashClose" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>VENUE OPEN</span><a id="proofVenueOpen" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>VENUE RESIZE</span><a id="proofVenueResize" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
+        <div><span>VENUE CLOSE</span><a id="proofVenueClose" class="proof-loading" target="_blank" rel="noreferrer">Fetching Solana proof…</a></div>
         <div><span>BUILD</span><code id="proofBuild">DEV_UNSET</code></div>
       </div>
-      <p class="microcopy">Every commitment, kill and fill is a Solana devnet transaction. Links open the live accounts and transactions on Solscan.</p>
+      <p class="microcopy">Fuse policy links use the selected Solana cluster. Venue links use the venue cluster shown in each receipt. A signature alone is not verified execution.</p>
     </section>
 
     <section class="infra-section">
       <div><span>EVENT LIQUIDITY / DATA</span><strong id="eventSourceLabel">Polymarket</strong></div>
-      <div><span>SOLANA RPC</span><strong>Devnet</strong></div>
-      <div><span>MARK ORACLE</span><strong>Pyth optional</strong></div>
-      <div><span>PERP EXECUTION</span><strong id="venueLabel">Flash Trade</strong></div>
+      <div><span>SOLANA CLUSTER</span><strong id="clusterLabel">—</strong></div>
+      <div><span>QUOTE AUTHORITY</span><strong>Worker supplied</strong></div>
+      <div><span>PERP EXECUTION</span><strong id="venueLabel">Drift</strong></div>
       <div><span>POLICY ENFORCEMENT</span><strong>KULT Fuse Anchor</strong></div>
     </section>
 
-    <footer><span>KULT FUSE v1.2 · SOLANA DEVNET</span><span>The agent proposes. The user authorizes. The policy executes. Solana verifies.</span></footer>
+    <footer><span>KULT FUSE v1.6 · PROOF-FIRST BUILD</span><span>Policy, venue execution, and authority are separate claims.</span></footer>
   </main>
+
+  <dialog id="operatorDialog" class="operator-dialog" aria-labelledby="operatorHeading">
+    <form method="dialog" id="operatorForm"><span class="eyebrow">OPERATOR ACCESS</span><h2 id="operatorHeading">Manage this mandate</h2><p>Enter the server operator token. It stays in this browser tab.</p><label for="operatorTokenInput">Operator token</label><input id="operatorTokenInput" type="password" autocomplete="off" required minlength="24" placeholder="FUSE_ADMIN_TOKEN" /><div class="row-actions"><button type="submit" class="btn primary">SIGN IN</button><button type="button" id="cancelOperator" class="btn ghost">CANCEL</button></div><p class="form-error hidden" id="operatorError" role="alert"></p></form>
+  </dialog>
 
 
 

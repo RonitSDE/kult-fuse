@@ -1,137 +1,14 @@
-# Final deployment runbook
+# Release and proof checklist · v1.6 source / v1.3 program schema
 
-This is the only runbook the submission deployer should need. Everything runs on live data: Polymarket for probability, Flash Trade devnet for execution, the Fuse program on Solana devnet for commitments.
+1. Pin a git commit. Run npm ci and npm test. Run Anchor 0.31 build and local tests. This v1.3 account has an added timestamp; upgrade the intended program or deploy a fresh program, then create new Fuse accounts. Copy its generated JSON IDL into deploy/idl/kult_fuse.json and commit that IDL with the source.
+2. Choose a liquid active SOL-related YES event on Polymarket. Write the exact event → SOL long rationale in the submission. Set POLYMARKET_MARKET explicitly and set the policy expiry no later than event expiry. Check live bid/ask, depth, spread and timestamp on the host. Do not advertise a BTC quote as a SOL causal trade.
+3. Isolate and fund one Drift subaccount/wallet for this mandate. Configure SOLANA_CLUSTER=DRIFT_ENV and the corresponding RPCs. Use a new devnet mandate where devnet liquidity and collateral are actually usable. If devnet cannot fill, disclose this and evaluate a separate **explicitly funded** mainnet demonstration; never call a mixed-cluster run one onchain atomic trade.
+4. Tag the tested code and IDL commit. Set BUILD_SHA to that commit's `git rev-parse HEAD` and BUILD_TAG to its tag; deploy exactly that commit. Fill .env.example values, including FUSE_PROGRAM_ID from the actual deployed build, FUSE_IDL_PATH=./deploy/idl/kult_fuse.json, three Fuse signer keys, DRIFT_PRIVATE_KEY_JSON and FUSE_ADMIN_TOKEN. Keep the keys in host secrets and the data directory persistent. Run npm run preflight. Keep AUTO_WORKER=0 until manual smoke works.
+5. Test with minimum size from policy.example.json. Start the API; /healthz must return 200. Arm, observe a live quote, authorize, open, resize, trigger kill, close and check actual residual. Record Fuse and Drift explorer signatures and run npm run verify -- --url https://YOUR_HOST. The decoder must find the matching Drift fill and Fuse FillRecorded event for every receipt. No receipt, decoder error, RPC error or anchor error means **Unverified**.
+6. Test refusal after kill and over cap at Fuse. State the authority limitation on screen. Test an actual loss stop separately only if you enable lossStopUsd; capture the venue P&L at trigger, kill signature, close fill, realized residual and slippage. No such test means keep the live stop off.
+7. Deploy Node 22 on an always-on host with a persistent DATA_DIR. Render Blueprint render.yaml is a starter. Its worker starts disabled. If using Cloudflare in front, deploy its proxy with Wrangler and test /api/state and /healthz via the public origin.
+8. Record the video from the public URL in an incognito browser: live quote, policy, Fuse create/arm/target/kill, actual venue lifecycle or honest no-fill state, verifier output and trust boundary. Fill SUBMISSION_MANIFEST.json with only observed links. Put this post-deployment evidence in a follow-up commit; its buildSha still identifies the earlier tagged code commit running on the host. Run `npm run manifest:source` after the evidence update, then run `sha256sum -c SOURCE_MANIFEST.sha256`, `npm run release:check` with production env, and `npm run submission:check -- --url https://YOUR_HOST` with that code tag and evidence manifest. The last command checks the public endpoints and runs the independent RPC verifier. Video, tagged code and host must match.
 
-## 1. Freeze the build
+If an execution fails after an order timeout, inspect the actual Drift position and transaction history before retrying. A killed mandate with residual exposure needs a venue close and an operator alert. Never regard a Fuse kill alone as a flat position.
 
-```bash
-git status
-git tag submission-2026-10-09
-export BUILD_TAG=submission-2026-10-09
-export BUILD_SHA=$(git rev-parse HEAD)
-```
-
-Do not record the video from a different commit.
-
-## 2. Install and local validation
-
-```bash
-npm install
-npm test
-```
-
-## 3. Deploy the Anchor program to devnet
-
-```bash
-cd contracts/fuse-anchor
-anchor keys sync
-anchor build
-anchor test   # runs the included local end-to-end policy/kill smoke
-anchor deploy --provider.cluster devnet
-```
-
-Save the program ID and transaction signature. Keep `target/deploy/kult_fuse-keypair.json` safe; it is needed for upgrades.
-
-## 4. Configure the runtime
-
-Copy `.env.example` to `.env` and set at minimum:
-
-```bash
-FUSE_ADMIN_TOKEN=<24+ char random token>
-SOLANA_CLUSTER=devnet
-SOLANA_RPC_URL=<devnet RPC>
-EVENT_SOURCE=polymarket
-PERP_ADAPTER=flash
-FLASH_CLUSTER=devnet
-FLASH_POOL=devnet.1
-FLASH_PRIVATE_KEY_JSON='[...]'
-FUSE_PROGRAM_ID=<program>
-FUSE_OWNER_PRIVATE_KEY_JSON='[...]'
-FUSE_EXECUTION_PRIVATE_KEY_JSON='[...]'
-FUSE_ORACLE_PRIVATE_KEY_JSON='[...]'
-BUILD_TAG=submission-2026-10-09
-BUILD_SHA=<git sha>
-```
-
-Use separate owner / oracle / execution / Flash keys. Fund each with devnet SOL; fund the Flash key with Flash devnet USDC (enough collateral for the policy's hard cap at `FLASH_LEVERAGE_X`).
-
-The live market slug is `DEFAULT_POLYMARKET_MARKET` in `src/adapters/event/polymarket-event.mjs` (Will Bitcoin reach $95,000 by December 31, 2026?). Change that constant to move the mandate. It must stay open, liquid, and inside the policy curve.
-
-```bash
-npm run preflight
-```
-
-## 5. Live data smoke
-
-```bash
-npm run smoke:polymarket   # live bid/ask and quality check for the chosen market
-npm run smoke:flash        # read-only Flash connection
-```
-
-Then a tiny Flash execution:
-
-```bash
-CONFIRM_FLASH_SMOKE=YES \
-FLASH_SMOKE_OPEN_USD=20 \
-FLASH_SMOKE_RESIZE_USD=30 \
-npm run smoke:flash
-```
-
-Capture open, resize and close signatures into `PROOF_FLASH_*`. Confirm residual exposure is zero.
-
-## 6. Start and arm
-
-```bash
-npm start   # or: docker compose -f deploy/compose.yaml up --build
-```
-
-On first boot the server creates its Fuse account onchain, committed to the live policy and market. Check:
-
-```bash
-curl $PUBLIC_URL/healthz     # "onchain": true, "market": "<slug>"
-curl $PUBLIC_URL/api/proof
-```
-
-Open the app, click **OPERATOR LOGIN**, enter `FUSE_ADMIN_TOKEN`, then **ARM FUSE**. The worker now polls the market and trades within the mandate. After a kill or settle, **NEW MANDATE** creates the next Fuse account.
-
-## 7. Public hosting
-
-Build the provided Docker image or run Node directly. Put TLS/reverse proxy in front of the service. Keep `.env` and wallet keys outside the image. The `.data` volume holds the current Fuse binding and receipts; keep it persistent. If that directory is empty on boot and Flash still has a position, the server refuses to create a new mandate.
-
-Health check path: `/healthz`.
-
-### Render
-
-`render.yaml` is a starter web service (Node 22.14) with a 1 GB disk mounted at `/var/data`. A free instance cannot keep that disk and will sleep, which stops the worker.
-
-1. Push this repo to GitHub.
-2. In Render: **New** → **Blueprint**, select the repo, and fill every `sync: false` variable (three Fuse keys, Flash key, `BUILD_SHA`, `PUBLIC_URL`). The market slug is in the source. `FUSE_ADMIN_TOKEN` is generated; copy it from the service environment to sign in as operator.
-3. After the first deploy, set `PUBLIC_URL` to the `https://….onrender.com` address and `BUILD_SHA` to `git rev-parse HEAD`, then redeploy.
-4. Confirm `https://<service>.onrender.com/healthz` returns `"onchain": true` and the configured market.
-
-### Cloudflare Worker frontend (optional)
-
-The dashboard in `web/` can be served from a Cloudflare Worker while the backend stays on Render. `cloudflare/worker.js` forwards `/api/*` and `/healthz` to the backend, so the browser only ever talks to the Worker origin. `wrangler.toml` holds the Worker name, the `web/` asset directory and `BACKEND_URL`.
-
-```bash
-npx wrangler login
-npx wrangler deploy      # from the repo root
-```
-
-A dashboard file upload publishes static files only and cannot run the proxy, so the API routes return 404; deploy with Wrangler.
-
-Then set `PUBLIC_URL` on Render to the Worker address and confirm `https://<worker>.workers.dev/healthz` returns `"onchain": true`. The Render service must stay running: it holds the keys, the worker and the `.data` disk.
-
-## 8. Final release gate
-
-```bash
-npm run release:check
-```
-
-Manually verify:
-
-- Receipts show live probabilities and **ON-CHAIN ↗** links that open on Solscan.
-- Chain proof panel shows the program and current Fuse account.
-- Independent verifier passes.
-- No private keys/API keys are in Git.
-- Public app and health endpoint load from a private/incognito browser.
+The scripted proof runner (npm run proof:venue -- --dry-run, then --confirm-mainnet for real mainnet funds) tests explicit program refusals and venue P&L plumbing. Its probability inputs are synthetic and must be labelled **scripted proof**, not a live Polymarket demonstration.

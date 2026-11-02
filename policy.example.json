@@ -7,35 +7,32 @@
   "steps": [
     {
       "pBps": 3500,
-      "exposureUsd": 100
+      "exposureUsd": 10
     },
     {
       "pBps": 5000,
-      "exposureUsd": 200
+      "exposureUsd": 15
     },
     {
       "pBps": 6000,
-      "exposureUsd": 300
-    },
-    {
-      "pBps": 7000,
-      "exposureUsd": 420
+      "exposureUsd": 25
     },
     {
       "pBps": 8000,
-      "exposureUsd": 500
+      "exposureUsd": 30
     }
   ],
   "killBelowBps": 3500,
-  "riskCapUsd": 500,
+  "riskCapUsd": 30,
   "maxLeverageBps": 20000,
-  "lossStopUsd": 50,
+  "lossStopUsd": 0,
   "hysteresisBps": 100,
   "confirmationCount": 2,
-  "minRebalanceUsd": 25,
+  "minRebalanceUsd": 2,
   "maxOracleAgeSec": 20,
-  "maxSpreadBps": 1200,
+  "maxSpreadBps": 300,
+  "minTopDepthUsd": 50,
   "expiryTs": 1893456000,
-  "venue": "FLASH",
+  "venue": "DRIFT",
   "marketId": "SOL-PERP"
 }

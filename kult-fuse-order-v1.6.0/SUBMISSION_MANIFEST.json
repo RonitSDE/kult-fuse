@@ -1,0 +1,28 @@
+{
+  "name": "KULT Fuse",
+  "version": "1.6.0",
+  "status": "release-candidate-source; external proof pending",
+  "buildSha": "",
+  "buildTag": "",
+  "publicUrl": "",
+  "healthUrl": "",
+  "demoVideo": "",
+  "eventMarket": "",
+  "eventToPerpThesis": "",
+  "fuseNetwork": "",
+  "venueNetwork": "",
+  "programId": "",
+  "fuseAccount": "",
+  "proofTransactions": {
+    "create": "",
+    "arm": "",
+    "target": "",
+    "kill": "",
+    "driftOpen": "",
+    "driftResize": "",
+    "driftClose": ""
+  },
+  "authorityBound": false,
+  "venueKeyCanBypassFuse": true,
+  "verification": "No execution to verify until live receipts, Drift fill events, Fuse anchor events, and matching onchain policy commitment confirm."
+}

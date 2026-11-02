@@ -3,10 +3,8 @@ import { FlashPerpAdapter } from './flash-perp.mjs';
 import { DriftPerpAdapter } from './drift-perp.mjs';
 
 export async function makePerpAdapter(env = process.env) {
-  // `paper` was the removed local simulator. A stale host env must not take the process down.
-  const requested = (env.PERP_ADAPTER || 'flash').toLowerCase();
-  const mode = requested === 'paper' ? 'flash' : requested;
-  if (requested === 'paper') console.warn('PERP_ADAPTER=paper is no longer supported; using flash');
+  const mode = (env.PERP_ADAPTER || 'drift').toLowerCase();
+  if (mode === 'paper') throw new Error('PERP_ADAPTER=paper is not available for the live worker');
   if (mode === 'driver') return new DriverPerpAdapter({ baseUrl: env.PERP_DRIVER_URL, token: env.PERP_DRIVER_TOKEN, symbol: env.PERP_SYMBOL || 'SOL-PERP' });
   if (mode === 'drift') {
     const adapter = new DriftPerpAdapter({
@@ -16,6 +14,7 @@ export async function makePerpAdapter(env = process.env) {
       marketIndex: Number(env.DRIFT_MARKET_INDEX || 0),
       symbol: env.PERP_SYMBOL || 'SOL-PERP',
       minOrderUsd: Number(env.DRIFT_MIN_ORDER_USD || 1),
+      maxSlippageBps: Number(env.DRIFT_MAX_SLIPPAGE_BPS || env.PERP_MAX_SLIPPAGE_BPS || 50),
       fillTimeoutMs: Number(env.DRIFT_FILL_TIMEOUT_MS || 20000)
     });
     await adapter.init();

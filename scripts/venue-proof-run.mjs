@@ -19,13 +19,14 @@ import { initialFuse } from '../src/core/state.mjs';
 import { policyHash } from '../src/core/policy.mjs';
 import { verifyExecution } from '../src/core/verifier.mjs';
 import { Reason } from '../src/core/constants.mjs';
+import { fuseFillEvidence } from '../src/adapters/store/fuse-evidence.mjs';
 
 const env = { ...process.env, PERP_ADAPTER: 'drift' };
 const dryRun = process.argv.includes('--dry-run');
 const venueEnv = env.DRIFT_ENV || 'devnet';
 const fuseCluster = env.SOLANA_CLUSTER || 'devnet';
 const collateralUsd = Number(env.PROOF_COLLATERAL_USD || 12);
-const lossStopUsd = Number(env.PROOF_LOSS_STOP_USD || 0.25);
+const lossStopUsd = Number(env.PROOF_LOSS_STOP_USD || 1);
 const lossWaitMin = Number(env.PROOF_LOSS_WAIT_MIN || 45);
 const out = env.PROOF_OUT || './docs/venue-proof.json';
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -118,7 +119,9 @@ async function expectRefusal(m, label, fn) {
     throw new Error(`${label} was ACCEPTED onchain (${sig}); the Fuse did not enforce its policy`);
   } catch (e) {
     if (/ACCEPTED onchain/.test(e.message)) throw e;
-    const code = (String(e.message).match(/Error Code: (\w+)/) || [])[1] || e.message.slice(0, 160);
+    const code = (String(e.message).match(/Error Code: (\w+)/) || [])[1];
+    const expected = label.includes('over-cap') ? 'RiskCapExceeded' : 'KilledCanOnlyClose';
+    if (code !== expected) throw new Error(`${label}: expected ${expected}, received ${code || e.message}`);
     m.rejections.push({ attempt: label, refusedBy: 'fuse program', error: code, at: Date.now() });
     log(`${m.name}: ${label} refused onchain: ${code}`);
   }
@@ -186,13 +189,19 @@ const chain = (m) => ({
   receiptHead: async () => {
     const acct = await clients.exec.program.account.fuseAccount.fetch(new clients.exec.web3.PublicKey(m.engine.fuse.chainFuse));
     return Buffer.from(acct.lastReceiptHash).toString('hex');
-  }
+  },
+  fuseState: async () => {
+    const acct = await clients.exec.program.account.fuseAccount.fetch(new clients.exec.web3.PublicKey(m.engine.fuse.chainFuse));
+    return { policyHash: Buffer.from(acct.curveHash).toString('hex') };
+  },
+  fillEvidence: (sig, receipt) => fuseFillEvidence({ connection: clients.exec.provider.connection,
+    program: clients.exec.program, fusePda: m.engine.fuse.chainFuse, signature: sig, receipt })
 });
 
-const result = { label: 'Real-venue proof run. Probability path scripted; Fuse transactions, venue fills, P&L and receipts are real.', venue: 'DRIFT', venueCluster: venueEnv, fuseCluster, programId: env.FUSE_PROGRAM_ID, gitSha: (() => { try { return execSync('git rev-parse HEAD').toString().trim(); } catch { return null; } })(), generatedAt: new Date().toISOString(), venueSetupTxs: perp.setupTxs || [], mandates: [] };
+const result = { label: 'Real-venue proof run. Probability path scripted; Fuse transactions, venue fills, P&L and receipts are real.', venue: 'DRIFT', venueUser: perp.userPk.toBase58(), venueCluster: venueEnv, fuseCluster, programId: env.FUSE_PROGRAM_ID, gitSha: (() => { try { return execSync('git rev-parse HEAD').toString().trim(); } catch { return null; } })(), generatedAt: new Date().toISOString(), venueSetupTxs: perp.setupTxs || [], mandates: [] };
 for (const m of mandates) {
   const fuse = m.engine.snapshot();
-  const verification = await verifyExecution({ fuse, receipts: m.receipts, chain: chain(m) });
+  const verification = await verifyExecution({ fuse, receipts: m.receipts, chain: { ...chain(m), venueEvidence: (sig, receipt) => perp.verifyFillTransaction(sig, receipt) } });
   log(`${m.name}: verifier → ${verification.summary}`);
   result.mandates.push({ name: m.name, fuse, receipts: m.receipts, rejections: m.rejections, lossStop: fuse.lossStop || null, verification });
 }

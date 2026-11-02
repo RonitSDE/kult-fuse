@@ -1,53 +1,13 @@
-# Threat model
+# Threat model · v1.3
 
-## Assets
+**Trusted parties:** the Polymarket observation is supplied by the oracle worker, the execution worker holds a Drift trading key, and the API operator controls owner keys. If either worker is compromised, it can lie about observations or trade outside Fuse. This release is not a noncustodial authority boundary.
 
-- user collateral/perp position;
-- owner/execution/oracle signing keys;
-- committed Fuse policy;
-- accepted event probability;
-- execution/receipt history.
+**Program controls on submitted targets:** a committed curve and cap, unique increasing nonces, expiry, fresh observation for increases, absorbing kill. A risk reduction/close can proceed during quote staleness. The program accepts a worker-attested fill amount and receipt hash after the venue transaction; it cannot force the venue close.
 
-## Primary threats and controls
+**Worker controls:** stale, wide or thin data blocks increases; position is read before/after orders; bounded IOC avoids resting orders; zero fills do not create receipts; kill retries a close while residual exposure remains. An RPC timeout or venue error can still leave an ambiguous or open position; inspect actual venue state before retrying.
 
-### Replayed event update
-Control: monotonic `oracle_sequence` onchain and in the worker.
+**Verification:** a receipt hash chain and last onchain head are necessary but not sufficient. The verifier checks the onchain policy hash, a matching Fuse FillRecorded event for each anchor, a matching Drift fill event for the expected user/market and base delta, and transaction statuses. No decoder, missing receipt, failed anchor or missing account means Unverified. Event logs and receipts should be inspected again after any SDK or program change.
 
-### Double execution after RPC timeout or worker crash
-Control: actual venue position is authoritative. Reconcile target minus **actual position**, not target minus last local receipt. Deterministic client IDs are used where the venue supports them.
+**Loss stop:** policy.example.json leaves it off. If enabled, venue P&L triggers worker kill and a separate close. It is not an onchain P&L invariant or maximum realized loss. Fees, market gaps, outages and slippage may increase realized loss.
 
-### Threshold oscillation / excessive turnover
-Control: probability hysteresis plus N-observation confirmation and minimum rebalance size.
-
-### Manipulated/thin event price
-Control: use bid/ask midpoint, maximum spread, maximum signal age; production should add minimum depth/liquidity and optional multi-source sanity checks.
-
-### Stale signal increases risk
-Control: stale/wide observations cannot increase exposure.
-
-### Kill state reopens
-Control: `KILLED` is absorbing. Onchain target can only be zero/reducing after kill.
-
-### Loss-stop marketed as guaranteed loss cap
-Control: the worker reads Flash `pnlWithFeeUsd` and, at −$50, submits an authorized kill, then sends the Flash close. The program does not compute venue P&L. Gaps and slippage can exceed $50 before that close lands. The hard onchain invariant is the target notional cap.
-
-### Worker treated as the Flash wallet
-Control: Fuse checks submitted targets and, once killed, rejects new exposure. It does not hold or sign the Flash wallet. The worker sends the separate Flash close.
-
-### Compromised AI/agent
-Control: Agent proposes only. Committed policy, authorities and hard cap govern execution after authorization.
-
-### Compromised execution worker
-Control: onchain target cap, allowed Fuse/market context, separate execution authority, replay nonces, operational key limits. A future version should bind venue/instruction verification more tightly onchain.
-
-### Compromised oracle worker
-Control: separate oracle authority, freshness/sequence constraints. V1 still trusts this authority for the external prediction-market observation. Production can add quorum/attestation schemes.
-
-### Receipt database tampering
-Control: hash-linked receipts with latest hash anchored onchain. Any historical edit breaks verification.
-
-## Known v1 trust boundaries
-
-Fuse checks the targets submitted to it. It does not control the Flash wallet. An onchain kill blocks new Fuse exposure. The worker sends the separate Flash close.
-
-External prediction-market probability and external perp fills are not made trustless by the Fuse program. The program proves authorization and bounded policy state; it does not cryptographically prove an offchain venue's matching engine.
+**Deployment:** separate owner/oracle/execution/venue keys, restrict signing and withdrawal rights, encrypt backups, keep a persistent data disk, monitor stale quote, failed anchor, kill with residual exposure, nonce failures, unexpected venue orders and RPC failures. An external audit and real authority binding are prerequisites for a serious mainnet product.

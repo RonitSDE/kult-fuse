@@ -1,0 +1,43 @@
+{
+  "name": "kult-fuse",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "description": "KULT Fuse \u2014 event-conditioned perp mandates with explicit policy, venue, and proof boundaries",
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/http/server.mjs",
+    "dev": "node --env-file-if-exists=.env --watch src/http/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "verify": "node --env-file-if-exists=.env scripts/verify.mjs",
+    "smoke:dflow": "node --env-file-if-exists=.env scripts/smoke-dflow.mjs",
+    "smoke:flash": "node --env-file-if-exists=.env scripts/smoke-flash.mjs",
+    "preflight": "node --env-file-if-exists=.env scripts/preflight.mjs",
+    "release:check": "node --env-file-if-exists=.env scripts/release-check.mjs",
+    "submission:check": "node --env-file-if-exists=.env scripts/submission-check.mjs",
+    "manifest:source": "node scripts/source-manifest.mjs",
+    "anchor:init": "node --env-file-if-exists=.env scripts/init-anchor.mjs",
+    "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs",
+    "smoke:polymarket": "node --env-file-if-exists=.env scripts/smoke-polymarket.mjs",
+    "proof:venue": "node --env-file-if-exists=.env scripts/venue-proof-run.mjs"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.31.1",
+    "@coral-xyz/borsh": "0.31.1",
+    "@drift-labs/sdk": "2.156.0",
+    "@pythnetwork/price-service-client": "1.10.0",
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "1.98.4",
+    "bn.js": "5.2.2",
+    "camelcase": "6.3.0",
+    "flash-sdk": "15.17.2"
+  },
+  "overrides": {
+    "@pythnetwork/price-service-client": "1.10.0"
+  },
+  "resolutions": {
+    "@pythnetwork/price-service-client": "1.10.0"
+  }
+}

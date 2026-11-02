@@ -52,6 +52,14 @@ export class FuseEngine {
       try {
         if (reason === Reason.KILL_PROBABILITY && this.chainHooks.killProbability) await this.chain('trigger_probability_kill', () => this.chainHooks.killProbability());
         else if (this.chainHooks.killAuthorized) await this.chain('trigger_authorized_kill', () => this.chainHooks.killAuthorized(reason));
+        // A manual kill must commit a new zero target/nonce before a venue close
+        // can be attached to exactly one onchain receipt.
+        if (this.chainHooks.setTarget) {
+          const nonce = ++this.fuse.executionNonce;
+          await this.chain('set_target', () => this.chainHooks.setTarget({ targetUsd: 0, nonce, reason }));
+          this.fuse.pendingExecutionNonce = nonce;
+          this.fuse.pendingTargetExposureUsd = 0;
+        }
         this.chainWarning = null;
       } catch (e) { this.chainWarning = `kill commitment failed: ${e.message}`; }
     }
@@ -89,7 +97,19 @@ export class FuseEngine {
     this.busy = true;
     try {
       if (![FuseStatus.ARMED, FuseStatus.OPEN, FuseStatus.REDUCING].includes(this.fuse.status)) {
+        if (this.fuse.status === FuseStatus.KILLED) {
+          const position = await this.perp.getPosition();
+          if (Math.abs(Number(position.exposureUsd || 0)) < 0.01) return { skipped: true, reason: 'STATE_KILLED', ...this.snapshot(), position };
+          return this.reconcile({ force: true, reason: this.fuse.lastReasonCode || Reason.RECONCILE });
+        }
         return { skipped: true, reason: `STATE_${this.fuse.status}`, ...this.snapshot() };
+      }
+
+      // Expiry is a clock condition, independent of the event feed. Commit the
+      // absorbing kill before attempting the venue close, even when a quote is
+      // stale, missing or the market API is unavailable.
+      if (Math.floor(Date.now() / 1000) > this.fuse.policy.expiryTs) {
+        return await this.kill(Reason.EXPIRY_CLOSE);
       }
 
       // The loss stop reads venue P&L before anything else, so a stale quote or an oracle outage cannot delay it.
@@ -185,6 +205,16 @@ export class FuseEngine {
     const desired = this.fuse.status === FuseStatus.KILLED ? 0 : this.fuse.desiredExposureUsd;
     const delta = desired - Number(before.exposureUsd || 0);
 
+    // A kill of an already-flat mandate should not send a zero-sized venue
+    // order or invent an execution receipt.
+    if (desired === 0 && Math.abs(Number(before.exposureUsd || 0)) < 0.01) {
+      this.fuse.filledExposureUsd = Number(before.exposureUsd || 0);
+      this.fuse.pendingExecutionNonce = 0;
+      this.fuse.pendingTargetExposureUsd = 0;
+      await this.persist(this.fuse);
+      return { executed: false, deltaUsd: delta, mark, ...this.snapshot(), position: before };
+    }
+
     if (!force && Math.abs(delta) < this.fuse.policy.minRebalanceUsd) {
       this.fuse.filledExposureUsd = Number(before.exposureUsd || 0);
       this.fuse.pendingExecutionNonce = 0;
@@ -193,10 +223,36 @@ export class FuseEngine {
       return { executed: false, deltaUsd: delta, mark, ...this.snapshot(), position: before };
     }
 
-    const nonce = this.fuse.pendingExecutionNonce || ++this.fuse.executionNonce;
+    let nonce = this.fuse.pendingExecutionNonce;
+    if (!nonce) {
+      nonce = ++this.fuse.executionNonce;
+      if (this.chainHooks?.setTarget) {
+        try {
+          await this.chain('set_target', () => this.chainHooks.setTarget({ targetUsd: desired, nonce, reason }));
+        } catch (e) {
+          this.chainWarning = `reconciliation target not committed: ${e.message}`;
+          if (Math.abs(desired) > Math.abs(Number(before.exposureUsd || 0)) + 0.01) {
+            await this.persist(this.fuse);
+            throw e;
+          }
+        }
+      }
+      this.fuse.pendingExecutionNonce = nonce;
+      this.fuse.pendingTargetExposureUsd = desired;
+      await this.persist(this.fuse);
+    }
     const clientOrderId = `${this.fuse.id}:${nonce}:${desired}`;
     const exec = await this.perp.executeTarget(desired, { clientOrderId, reduceOnly: this.fuse.status === FuseStatus.KILLED || Math.abs(desired) < Math.abs(before.exposureUsd || 0) });
     const actual = await this.perp.getPosition();
+    const baseChanged = before.baseAmount != null && actual.baseAmount != null
+      ? Math.abs(Number(actual.baseAmount) - Number(before.baseAmount)) > 1e-9
+      : Math.abs(Number(actual.exposureUsd || 0) - Number(before.exposureUsd || 0)) >= 0.01;
+    if (!exec.txSignature || !baseChanged) {
+      this.chainWarning = 'Venue did not produce a position fill; no execution receipt was created.';
+      this.fuse.filledExposureUsd = Number(actual.exposureUsd || 0);
+      await this.persist(this.fuse);
+      return { executed: false, pending: true, reason: 'NO_VENUE_FILL', mark, ...this.snapshot(), position: actual };
+    }
 
     const oldFilled = this.fuse.filledExposureUsd;
     this.fuse.filledExposureUsd = Number(actual.exposureUsd || 0);
@@ -219,6 +275,9 @@ export class FuseEngine {
       desiredExposureAfterUsd: desired,
       actualExposureBeforeUsd: Number(before.exposureUsd || 0),
       filledExposureAfterUsd: this.fuse.filledExposureUsd,
+      baseAmountBefore: before.baseAmount,
+      baseAmountAfter: actual.baseAmount,
+      marketId: actual.symbol || this.fuse.policy.marketId,
       markPrice: this.fuse.lastMarkPrice,
       reason: reason || this.fuse.lastReasonCode,
       venue: actual.venue || this.fuse.policy.venue,

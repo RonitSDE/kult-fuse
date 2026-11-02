@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import { DEFAULT_POLYMARKET_MARKET } from '../src/adapters/event/polymarket-event.mjs';
 const env = process.env;
 const checks = [];
 const add = (name, ok, detail='') => checks.push({name, ok:Boolean(ok), detail});
@@ -10,8 +9,8 @@ add('Solana RPC', env.SOLANA_RPC_URL && !env.SOLANA_RPC_URL.includes('YOUR_API_K
 
 const source = (env.EVENT_SOURCE || 'polymarket').toLowerCase();
 if (source === 'polymarket') {
-  const market = env.POLYMARKET_MARKET || DEFAULT_POLYMARKET_MARKET;
-  add('Polymarket market', market, market);
+  const market = env.POLYMARKET_MARKET || 'unset';
+  add('Polymarket market explicitly selected', Boolean(env.POLYMARKET_MARKET), market);
 }
 else if (source === 'dflow') {
   add('DFlow API key', env.DFLOW_API_KEY, 'required for dflow');
@@ -21,12 +20,20 @@ else if (source === 'dflow') {
 const policyFile = env.POLICY_FILE || './policy.example.json';
 add('Policy file', fs.existsSync(policyFile), policyFile);
 
-if ((env.PERP_ADAPTER || 'flash') === 'flash') {
+const venue = (env.PERP_ADAPTER || 'drift').toLowerCase();
+if (venue === 'flash') {
   add('Flash private key', env.FLASH_PRIVATE_KEY_JSON, 'required for Flash');
   add('Flash pool', env.FLASH_POOL, env.FLASH_POOL || 'unset');
 }
+if (venue === 'drift') {
+  add('Drift private key', Boolean(env.DRIFT_PRIVATE_KEY_JSON), 'required to execute orders');
+  add('Drift RPC', Boolean(env.DRIFT_RPC_URL || env.SOLANA_RPC_URL), env.DRIFT_ENV || 'devnet');
+  add('Venue and Fuse cluster', (env.SOLANA_CLUSTER || 'devnet') === (env.DRIFT_ENV || 'devnet'), 'use one cluster for live mandate proof');
+  add('Drift slippage limit', Number(env.DRIFT_MAX_SLIPPAGE_BPS || env.PERP_MAX_SLIPPAGE_BPS || 50) > 0 && Number(env.DRIFT_MAX_SLIPPAGE_BPS || env.PERP_MAX_SLIPPAGE_BPS || 50) <= 1000, '1–1000 bps');
+}
+if (!['flash', 'drift', 'driver'].includes(venue)) add('Supported venue', false, venue);
 
-const idlPath = env.FUSE_IDL_PATH || './contracts/fuse-anchor/target/idl/kult_fuse.json';
+const idlPath = env.FUSE_IDL_PATH || './deploy/idl/kult_fuse.json';
 add('Fuse program ID', env.FUSE_PROGRAM_ID, 'required');
 add('Fuse IDL', fs.existsSync(idlPath), idlPath);
 add('Fuse owner key', env.FUSE_OWNER_PRIVATE_KEY_JSON, 'required');

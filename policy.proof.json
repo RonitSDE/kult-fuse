@@ -18,7 +18,7 @@
   "confirmationCount": 2,
   "minRebalanceUsd": 2,
   "maxOracleAgeSec": 20,
-  "maxSpreadBps": 1200,
+  "maxSpreadBps": 300,
   "expiryTs": 1893456000,
   "venue": "DRIFT",
   "marketId": "SOL-PERP"

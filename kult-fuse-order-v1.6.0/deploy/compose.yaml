@@ -1,0 +1,14 @@
+services:
+  fuse:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8787:8787"
+    env_file:
+      - ../.env
+    volumes:
+      - fuse-data:/app/.data
+    restart: unless-stopped
+volumes:
+  fuse-data:

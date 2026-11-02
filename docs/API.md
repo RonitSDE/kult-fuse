@@ -1,37 +1,5 @@
 # HTTP API
 
-## Public
+Public GET /healthz: build identity and health. GET /api/state: quote, Fuse state, actual venue position, receipts, worker decisions and unbound-authority status. Public GET /api/decisions returns the current mandate's bounded worker decision journal as JSON; it is not execution proof. GET /api/proof: links and verified replay only when current receipts pass onchain verification. POST /api/verify: read-only independent verification from Solana RPC.
 
-### GET /healthz
-Returns deployment identity and health (network, market, program, adapters, build).
-
-### GET /api/state
-Returns integrity metadata, the live market, Fuse state (including its onchain transactions), the reconciled venue position and the receipt chain.
-
-### GET /api/proof
-Returns explorer-ready program / Fuse account / pinned transaction references.
-
-### POST /api/verify
-Runs the independent policy/receipt verifier. Read-only.
-
-## Operator
-
-Require `Authorization: Bearer FUSE_ADMIN_TOKEN`.
-
-### POST /api/arm
-Arms the current Fuse onchain.
-
-### POST /api/tick
-Polls the live market once and reconciles the target against actual venue exposure. The server worker does this continuously (`AUTO_WORKER`).
-
-### POST /api/kill
-Authorized emergency kill. Absorbing state; subsequent risk increases are forbidden.
-
-### POST /api/settle
-Settles the Fuse once venue exposure is zero.
-
-### POST /api/fuse/new
-Starts the next mandate after the current Fuse is killed or settled: creates a new onchain Fuse account committed to the live policy and market.
-
-### POST /api/auth
-Returns 200 when the operator token is valid.
+Operator POST /api/auth, /api/arm, /api/tick, /api/kill, /api/settle, /api/fuse/new require Authorization: Bearer FUSE_ADMIN_TOKEN. Do not expose owner or trading keys to a browser. On a loss of the persistent DATA_DIR, the server refuses a new mandate if the venue still has exposure.

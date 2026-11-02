@@ -1,25 +1,7 @@
-# KULT Fuse v1.2 — Build Report
+# v1.6.0 source handoff
 
-## Included
+The product remains one prediction informed SOL-PERP mandate with a live Polymarket quote, a committed curve, a small Drift order, independent fill and anchor verification, and an honest unbound venue key.
 
-- Anchor Fuse program source with onchain curve recomputation, hard cap, expiry, replay protection and absorbing kill. Includes an Anchor local integration smoke (`init → arm → 61%/$300 → 28%/KILLED → $0`, reopen rejected).
-- Polymarket (default) and DFlow event adapters with midpoint/spread/freshness validation.
-- Flash Trade perp adapter with venue reconciliation before and after execution.
-- Backend HTTP API; every state-changing action requires the operator token.
-- Live dashboard with operator controls, verifier and Chain Proof panel; receipts link to their onchain transactions.
-- Tamper-evident receipt chain + independent verifier.
-- Docker deployment files, preflight/release scripts and final deployment runbook.
+Changes since v1.5.0: expiry kills and closes even if the quote reader is unavailable; already-flat kills skip a phantom venue order; operator and worker state mutations are serialized; expiry close signatures appear in the proof panel; all test files run in the release gate; a read-only submission checker rejects missing public proof and independently verifies receipt events against RPC.
 
-## Locally validated in this package
-
-- `npm test`: deterministic policy, hysteresis/debounce, replay rejection, stale signal safety, absorbing kill, malicious target detection, receipt verification and double-execution recovery.
-- Backend/API/static frontend runtime.
-- Syntax checks for final Node sources.
-
-## External validation required by deployer
-
-1. Polymarket live market smoke from the production host.
-2. Flash Trade devnet open → resize → close smoke with a USDC-funded key.
-3. Public hosting.
-
-These are deployment gates, not hidden claims.
+The source archive has no compiled program, generated IDL, current live Drift signatures, public URL or video. The included manifest is blank. The deployed program account, actual lifecycle and host must be proved on the same release commit before submission. The Drift wallet can bypass Fuse.

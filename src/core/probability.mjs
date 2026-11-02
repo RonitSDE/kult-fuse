@@ -17,7 +17,7 @@ export function makeProbabilityMark({ bid, ask, bidDepthUsd = null, askDepthUsd 
   const minDepth = Number(policy.minTopDepthUsd || 0);
   const qualityReason = ageSec > policy.maxOracleAgeSec ? 'STALE'
     : spreadBps > policy.maxSpreadBps ? 'WIDE'
-    : minDepth > 0 && depthUsd != null && depthUsd < minDepth ? 'THIN'
+    : minDepth > 0 && (depthUsd == null || depthUsd < minDepth) ? 'THIN'
     : 'OK';
 
   return {
@@ -44,7 +44,7 @@ export function explainSignal(mark, policy, currentTargetUsd = 0) {
   const hold = `No increase: permitted exposure stays at most $${currentTargetUsd}.`;
   if (mark.qualityReason === 'STALE') return `Quote is ${age}. ${hold}`;
   if (mark.qualityReason === 'WIDE') return `Quote ${spread} is too wide to trust. ${hold}`;
-  if (mark.qualityReason === 'THIN') return `Top of book holds $${mark.depthUsd?.toFixed(0)} (min $${policy.minTopDepthUsd}). ${hold}`;
+  if (mark.qualityReason === 'THIN') return `Top of book ${mark.depthUsd == null ? 'depth is unavailable' : `holds $${mark.depthUsd.toFixed(0)}`} (min $${policy.minTopDepthUsd}). ${hold}`;
   if (mark.pBps < policy.killBelowBps) return `${p}% is under the ${policy.killBelowBps / 100}% kill line: target $0, mandate killed.`;
   const step = rawTargetForProbability(policy, mark.pBps);
   return `${p}% mid, ${age}, ${spread}: the committed curve permits $${step}.`;

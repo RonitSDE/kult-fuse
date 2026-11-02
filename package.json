@@ -1,9 +1,9 @@
 {
   "name": "kult-fuse",
-  "version": "1.2.0",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
-  "description": "KULT Fuse — a Solana execution mandate: live prediction-market probability drives a perp position within an onchain-enforced policy",
+  "description": "KULT Fuse \u2014 event-conditioned perp mandates with explicit policy, venue, and proof boundaries",
   "engines": {
     "node": ">=22.14"
   },
@@ -16,6 +16,8 @@
     "smoke:flash": "node --env-file-if-exists=.env scripts/smoke-flash.mjs",
     "preflight": "node --env-file-if-exists=.env scripts/preflight.mjs",
     "release:check": "node --env-file-if-exists=.env scripts/release-check.mjs",
+    "submission:check": "node --env-file-if-exists=.env scripts/submission-check.mjs",
+    "manifest:source": "node scripts/source-manifest.mjs",
     "anchor:init": "node --env-file-if-exists=.env scripts/init-anchor.mjs",
     "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs",
     "smoke:polymarket": "node --env-file-if-exists=.env scripts/smoke-polymarket.mjs",

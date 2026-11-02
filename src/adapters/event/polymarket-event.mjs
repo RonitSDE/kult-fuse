@@ -4,14 +4,12 @@
  * Live quotes:     CLOB API   GET /book?token_id=<outcome token>
  * Probability = the outcome token's best bid/ask on the live order book.
  *
- * Change this slug to point the mandate at a different open market.
- * https://polymarket.com/event/what-price-will-bitcoin-hit-before-2027
+ * The selected event must be explicit for the live mandate.
  */
-export const DEFAULT_POLYMARKET_MARKET = 'will-bitcoin-reach-95000-by-december-31-2026-from-june-8';
-
 export class PolymarketEventSource {
   constructor({ market, outcome = 'Yes', gammaUrl, clobUrl, timeoutMs = 5000, fetchImpl = fetch }) {
-    this.market = market || DEFAULT_POLYMARKET_MARKET;
+    if (!market) throw new Error('Polymarket event slug is required');
+    this.market = market;
     this.outcome = outcome;
     this.gammaUrl = (gammaUrl || 'https://gamma-api.polymarket.com').replace(/\/$/, '');
     this.clobUrl = (clobUrl || 'https://clob.polymarket.com').replace(/\/$/, '');

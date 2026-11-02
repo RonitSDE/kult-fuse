@@ -8,5 +8,4 @@ directory = "./web"
 binding = "ASSETS"
 run_worker_first = ["/api/*", "/healthz"]
 
-[vars]
-BACKEND_URL = "https://kult-fuse-qep5.onrender.com"
+# Set BACKEND_URL to the v1.3 deployment before publishing this proxy.

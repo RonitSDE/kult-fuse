@@ -132,3 +132,27 @@ test('a risk increase that fails onchain never reaches the venue and retries wit
   assert.equal(x.fuse.lastReasonCode,'INITIAL_OPEN');
   assert.equal(x.calls.filter(c=>c.ix==='setTarget').at(-1).arg.nonce,burned+1);
 });
+
+test('partial venue fill requires a fresh onchain target before a second order', async()=>{
+  const x=chainFixture(); const execute=x.perp.executeTarget.bind(x.perp);
+  let first=true;
+  x.perp.executeTarget=async(target,options)=>{
+    if(first){first=false;return execute(target/2,options);}
+    return execute(target,options);
+  };
+  await x.engine.arm(); await twoTicks(x.engine);
+  assert.equal((await x.perp.getPosition()).exposureUsd,150);
+  await x.engine.tick();
+  assert.equal((await x.perp.getPosition()).exposureUsd,300);
+  assert.equal(x.calls.filter(c=>c.ix==='setTarget').length,2);
+  assert.equal(x.calls.filter(c=>c.ix==='recordFill').length,2);
+});
+
+test('manual kill commits a new zero target before its close fill', async()=>{
+  const x=chainFixture(); await x.engine.arm(); await twoTicks(x.engine);
+  const before=x.fuse.executionNonce;
+  await x.engine.kill();
+  const calls=x.calls.map(c=>c.ix);
+  assert.deepEqual(calls.slice(-3),['killAuthorized','setTarget','recordFill']);
+  assert.equal(x.calls.filter(c=>c.ix==='setTarget').at(-1).arg.nonce,before+1);
+});

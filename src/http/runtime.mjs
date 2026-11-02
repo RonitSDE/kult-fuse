@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { FileStore } from '../adapters/store/file-store.mjs';
 import { DFlowEventSource } from '../adapters/event/dflow-event.mjs';
-import { DEFAULT_POLYMARKET_MARKET, PolymarketEventSource } from '../adapters/event/polymarket-event.mjs';
+import { PolymarketEventSource } from '../adapters/event/polymarket-event.mjs';
 import { makePerpAdapter } from '../adapters/perp/factory.mjs';
 import { policyHash, validatePolicy } from '../core/policy.mjs';
 import { initialFuse } from '../core/state.mjs';
@@ -10,6 +10,8 @@ import { FuseEngine } from '../worker/fuse-engine.mjs';
 import { verifyExecution } from '../core/verifier.mjs';
 import { makeProbabilityMark, explainSignal } from '../core/probability.mjs';
 import { AnchorFuseClient } from '../adapters/store/anchor-fuse-client.mjs';
+import { fuseFillEvidence } from '../adapters/store/fuse-evidence.mjs';
+import { makeDecision, retainDecisions } from '../core/decision.mjs';
 
 const TERMINAL = ['KILLED', 'SETTLED'];
 
@@ -17,21 +19,19 @@ const TERMINAL = ['KILLED', 'SETTLED'];
 // (a venue order id, a placeholder) must never be published as an explorer link.
 export const isSignature = (value) => typeof value === 'string' && /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(value);
 
-// Live chain and venue signatures win. Pinned PROOF_* env values are only a fallback
-// for a process whose local receipt log has not yet recorded that transaction.
-export function proofTransactions({ env = {}, chain = null, fuse = null, receipts = [], pins = {} } = {}) {
+// Only the current mandate's chain transactions and actual venue receipts qualify.
+export function proofTransactions({ chain = null, fuse = null, receipts = [] } = {}) {
   const txs = fuse?.chainTxs || [];
   const lastIx = (pred) => [...txs].reverse().find((t) => pred(t) && isSignature(t.signature))?.signature || null;
   const lastReceipt = (pred) => [...receipts].reverse().find((r) => pred(r) && isSignature(r.txSignature))?.txSignature || null;
-  const pick = (live, pinned) => [live, pinned].find(isSignature) || null;
   return {
-    create: pick(isSignature(chain?.createTx) ? chain.createTx : lastIx((t) => t.ix === 'init_fuse'), env.PROOF_CREATE_TX || pins.create),
-    arm: pick(lastIx((t) => t.ix === 'arm_fuse'), env.PROOF_ARM_TX || pins.arm),
-    target: pick(lastIx((t) => t.ix === 'set_target'), env.PROOF_TARGET_TX || pins.target),
-    kill: pick(lastIx((t) => String(t.ix || '').startsWith('trigger_')), env.PROOF_KILL_TX || pins.kill),
-    flashOpen: pick(lastReceipt((r) => r.reason === 'INITIAL_OPEN'), env.PROOF_FLASH_OPEN_TX || pins.flashOpen),
-    flashResize: pick(lastReceipt((r) => r.reason === 'PROBABILITY_STEP_UP' || r.reason === 'PROBABILITY_STEP_DOWN'), env.PROOF_FLASH_RESIZE_TX || pins.flashResize),
-    flashClose: pick(lastReceipt((r) => r.reason === 'KILL_PROBABILITY' || r.reason === 'EMERGENCY_KILL' || r.reason === 'LOSS_STOP'), env.PROOF_FLASH_CLOSE_TX || pins.flashClose)
+    create: isSignature(chain?.createTx) ? chain.createTx : lastIx((t) => t.ix === 'init_fuse'),
+    arm: lastIx((t) => t.ix === 'arm_fuse'),
+    target: lastIx((t) => t.ix === 'set_target'),
+    kill: lastIx((t) => String(t.ix || '').startsWith('trigger_')),
+    venueOpen: lastReceipt((r) => r.reason === 'INITIAL_OPEN'),
+    venueResize: lastReceipt((r) => r.reason === 'PROBABILITY_STEP_UP' || r.reason === 'PROBABILITY_STEP_DOWN'),
+    venueClose: lastReceipt((r) => r.reason === 'KILL_PROBABILITY' || r.reason === 'EMERGENCY_KILL' || r.reason === 'LOSS_STOP' || r.reason === 'EXPIRY_CLOSE')
   };
 }
 
@@ -39,13 +39,23 @@ export class Runtime {
   constructor(env = process.env) {
     this.env = env;
     this.store = new FileStore(env.DATA_DIR || './.data');
-    this.proofPins = {};
-    this.pinnedVerifiedRun = null;
     this.quote = null;
     this.quoteError = null;
+    this.mutationQueue = Promise.resolve();
+  }
+
+  // A manual kill, worker tick and new mandate must never mutate the same
+  // nonce or venue position concurrently. Recover the queue after rejection.
+  runExclusive(operation) {
+    const next = (this.mutationQueue || Promise.resolve()).then(operation);
+    this.mutationQueue = next.catch(() => {});
+    return next;
   }
 
   async init() {
+    if ((this.env.PERP_ADAPTER || 'drift').toLowerCase() === 'drift' && (this.env.DRIFT_ENV || 'devnet') !== (this.env.SOLANA_CLUSTER || 'devnet')) {
+      throw new Error('live Fuse and Drift must be on the same Solana cluster; the scripted proof runner is separate');
+    }
     await this.store.init();
     this.receipts = await this.store.read('receipts', []);
     this.eventSource = this.makeEventSource();
@@ -53,7 +63,6 @@ export class Runtime {
     this.basePolicy = JSON.parse(await fs.readFile(this.env.POLICY_FILE || './policy.example.json', 'utf8'));
     this.perp = await makePerpAdapter(this.env);
     this.chain = await this.store.read('chain', null);
-    await this.loadVerifiedRun();
     this.chainHooks = await this.makeChainHooks();
 
     let fuse = await this.store.read('fuse');
@@ -65,7 +74,7 @@ export class Runtime {
       const localOpen = fuse && !TERMINAL.includes(fuse.status) && Math.abs(localUsd) >= 0.01;
       if (localOpen || Math.abs(venueUsd) >= 0.01) {
         const who = fuse ? `fuse ${fuse.id} on ${fuse.policy.eventMarket}` : 'no local fuse (DATA_DIR is empty)';
-        throw new Error(`${who} still has venue exposure ${venueUsd} USD; restore the data disk or close the Flash position before starting a new mandate`);
+        throw new Error(`${who} still has venue exposure ${venueUsd} USD; restore the data disk or close the venue position before starting a new mandate`);
       }
       fuse = this.newFuse();
       await this.provisionChainFuse(fuse);
@@ -73,6 +82,7 @@ export class Runtime {
       await this.store.write('receipts', this.receipts);
     }
     this.bindEngine(fuse);
+    this.decisions = (await this.store.read('decisions', [])).filter((item) => item.fuseId === fuse.id).slice(-60);
     await this.persist(fuse);
     return this;
   }
@@ -80,7 +90,8 @@ export class Runtime {
   makeEventSource() {
     const kind = (this.env.EVENT_SOURCE || 'polymarket').toLowerCase();
     if (kind === 'polymarket') {
-      const src = new PolymarketEventSource({ market: this.env.POLYMARKET_MARKET || DEFAULT_POLYMARKET_MARKET, outcome: this.env.POLYMARKET_OUTCOME || 'Yes', gammaUrl: this.env.POLYMARKET_GAMMA_URL, clobUrl: this.env.POLYMARKET_CLOB_URL });
+      if (!this.env.POLYMARKET_MARKET) throw new Error('POLYMARKET_MARKET must be selected explicitly for the live mandate');
+      const src = new PolymarketEventSource({ market: this.env.POLYMARKET_MARKET, outcome: this.env.POLYMARKET_OUTCOME || 'Yes', gammaUrl: this.env.POLYMARKET_GAMMA_URL, clobUrl: this.env.POLYMARKET_CLOB_URL });
       const init = src.init.bind(src);
       src.init = async () => { const i = await init(); return { kind, id: i.slug, question: i.question, outcome: i.outcome, url: i.url, endDateMs: i.endDateMs }; };
       return src;
@@ -97,7 +108,7 @@ export class Runtime {
     const policy = structuredClone(this.basePolicy);
     policy.eventMarket = this.market.id;
     policy.outcomeId = String(this.market.outcome).toUpperCase();
-    policy.venue = (this.env.PERP_ADAPTER || 'flash').toUpperCase();
+    policy.venue = (this.env.PERP_ADAPTER || 'drift').toUpperCase();
     policy.marketId = this.env.PERP_SYMBOL || 'SOL-PERP';
     // A mandate never outlives the market it is priced on.
     if (this.market.endDateMs) {
@@ -170,7 +181,7 @@ export class Runtime {
   }
 
   // Starts the next mandate once the current one is finished (killed or settled, no open exposure).
-  async newMandate() {
+  async createMandate() {
     const current = this.engine.fuse;
     if (current.status === 'PROPOSED') return this.getState();
     if (!TERMINAL.includes(current.status)) throw new Error(`current fuse is ${current.status}; kill or settle it first`);
@@ -183,39 +194,23 @@ export class Runtime {
     await this.provisionChainFuse(fuse);
     this.receipts = [];
     await this.store.write('receipts', this.receipts);
+    if (this.decisionWrite) await this.decisionWrite;
+    this.decisions = [];
+    await this.store.write('decisions', this.decisions);
     this.bindEngine(fuse);
     await this.persist(fuse);
     return this.getState();
   }
 
-  async loadVerifiedRun() {
-    this.proofPins = {};
-    this.pinnedVerifiedRun = null;
-    try {
-      const raw = await fs.readFile(new URL('../../docs/devnet-proof.json', import.meta.url), 'utf8');
-      const parsed = JSON.parse(raw);
-      this.proofPins = parsed.transactions || {};
-      const receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
-      if (receipts.length && receipts.every((r) => r?.hash && isSignature(r?.txSignature))) this.pinnedVerifiedRun = parsed;
-    } catch { /* no recorded run yet */ }
-  }
-
   // A replay is offered as verified only when the verifier passed it against the chain.
   async verifiedRunPayload() {
     const live = this.receipts || [];
-    const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: live, pins: this.proofPins });
+    const txs = proofTransactions({ chain: this.chain, fuse: this.engine?.fuse, receipts: live });
     if (live.some((r) => r.txSignature)) {
       const v = await this.verify();
       if (v.status === 'VERIFIED') return { source: 'live', residualUsd: Number(this.engine.fuse.filledExposureUsd || 0), transactions: txs, receipts: live };
     }
-    if (!this.pinnedVerifiedRun) return null;
-    return {
-      source: 'recorded',
-      label: this.pinnedVerifiedRun.label || null,
-      residualUsd: this.pinnedVerifiedRun.residualUsd ?? null,
-      transactions: txs,
-      receipts: this.pinnedVerifiedRun.receipts
-    };
+    return null;
   }
 
   startQuoteWatch() {
@@ -254,14 +249,14 @@ export class Runtime {
 
   async getState() {
     const position = await this.perp.getPosition();
-    return { integrity: this.integrity(), market: this.market, quote: this.quoteView(), fuse: this.engine.snapshot(), position, receipts: this.receipts };
+    return { integrity: this.integrity(), market: this.market, quote: this.quoteView(), fuse: this.engine.snapshot(), position, receipts: this.receipts, decisions: this.decisions || [] };
   }
 
   integrity() {
     return {
       onchain: true,
       network: this.env.SOLANA_CLUSTER || 'devnet',
-      perpAdapter: (this.env.PERP_ADAPTER || 'flash').toLowerCase(),
+      perpAdapter: (this.env.PERP_ADAPTER || 'drift').toLowerCase(),
       eventSource: this.market?.kind || null,
       programId: this.env.FUSE_PROGRAM_ID || null,
       fusePda: this.activeFusePda(),
@@ -272,12 +267,12 @@ export class Runtime {
     };
   }
 
-  // Flash Trade has no delegated, size-capped trading authority, so the venue key cannot be bound to Fuse limits.
+  // This build has no program-signed venue delegation; never infer it from a config flag.
   venueAuthority() {
     return {
       bound: false,
-      venue: (this.env.PERP_ADAPTER || 'flash').toUpperCase(),
-      limitation: 'Not bound at the venue. Flash Trade has no delegated key scoped to a size cap or to the Fuse state, so the trading key could still open over the cap or after a kill if the worker were compromised. Fuse limits are enforced by this worker and recorded onchain; the venue does not check them. Closing is never blocked.'
+      venue: (this.env.PERP_ADAPTER || 'drift').toUpperCase(),
+      limitation: 'The venue key can trade outside Fuse. The program verifies worker-submitted targets; only a confirmed venue close flattens a position. Owner-controlled revocation or program-signed venue delegation is not implemented in this build.'
     };
   }
 
@@ -293,6 +288,18 @@ export class Runtime {
         const st = value?.[0];
         return { confirmed: Boolean(st && ['confirmed', 'finalized'].includes(st.confirmationStatus)), err: st?.err ?? null };
       },
+      venueEvidence: async (sig, receipt) => {
+        if (!this.perp?.verifyFillTransaction) return { ok: false, why: 'this venue has no independent fill decoder' };
+        if (receipt.venueRef !== this.perp.userPk?.toBase58()) return { ok: false, why: 'receipt references a different venue account' };
+        if (receipt.marketId !== this.perp.opts?.symbol) return { ok: false, why: 'receipt references a different perp market' };
+        return this.perp.verifyFillTransaction(sig, receipt);
+      },
+      fillEvidence: (sig, receipt) => fuseFillEvidence({ connection: exec.provider.connection,
+        program: exec.program, fusePda: this.activeFusePda(), signature: sig, receipt }),
+      fuseState: async () => {
+        const account = await exec.fetch();
+        return { policyHash: Buffer.from(account.curveHash).toString('hex') };
+      },
       receiptHead: async () => Buffer.from((await exec.fetch()).lastReceiptHash).toString('hex')
     };
   }
@@ -301,9 +308,12 @@ export class Runtime {
     const cluster = this.env.SOLANA_CLUSTER || 'devnet';
     const suffix = cluster === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(cluster)}`;
     const base = this.env.SOLSCAN_BASE_URL || 'https://solscan.io';
-    const link = (kind, value) => value ? `${base}/${kind}/${value}${suffix}` : null;
-    const txs = proofTransactions({ env: this.env, chain: this.chain, fuse: this.engine?.fuse, receipts: this.receipts, pins: this.proofPins });
-    const tx = (value) => ({ value: value || null, url: link('tx', value) });
+    const link = (kind, value, venueCluster) => value ? `${base}/${kind}/${value}${venueCluster === 'mainnet-beta' ? '' : venueCluster ? `?cluster=${encodeURIComponent(venueCluster)}` : suffix}` : null;
+    const txs = proofTransactions({ chain: this.chain, fuse: this.engine?.fuse, receipts: this.receipts });
+    const tx = (value, venue = false) => {
+      const clusterOverride = venue ? this.receipts.find((r) => r.txSignature === value)?.venueCluster : null;
+      return { value: value || null, url: link('tx', value, clusterOverride) };
+    };
     return {
       integrity: this.integrity(),
       program: { value: this.env.FUSE_PROGRAM_ID || null, url: link('account', this.env.FUSE_PROGRAM_ID) },
@@ -312,18 +322,37 @@ export class Runtime {
         create: tx(txs.create),
         arm: tx(txs.arm),
         kill: tx(txs.kill),
-        flashOpen: tx(txs.flashOpen),
-        flashResize: tx(txs.flashResize),
-        flashClose: tx(txs.flashClose),
+        venueOpen: tx(txs.venueOpen, true),
+        venueResize: tx(txs.venueResize, true),
+        venueClose: tx(txs.venueClose, true),
         target: tx(txs.target)
       },
       verifiedRun: await this.verifiedRunPayload()
     };
   }
 
-  async tick() { return this.engine.tick(); }
-  async arm() { return this.engine.arm(); }
-  async kill() { return this.engine.kill(); }
-  async settle() { return this.engine.settle(); }
+  async recordDecision(action, operation) {
+    let result, error;
+    try { result = await operation(); }
+    catch (e) { error = e; }
+    let position = result?.position || null;
+    if (!position) {
+      try { position = await this.perp.getPosition(); } catch { /* unavailable is not zero exposure */ }
+    }
+    const decision = makeDecision({ action, fuse: this.engine.snapshot(), result, error, position });
+    this.decisions = retainDecisions(this.decisions || [], decision);
+    // Auto worker and operator actions can finish together. Serialize writes
+    // because FileStore's atomic temp path is shared by the process.
+    this.decisionWrite = (this.decisionWrite || Promise.resolve()).catch(() => {})
+      .then(() => this.store.write('decisions', this.decisions));
+    await this.decisionWrite;
+    if (error) throw error;
+    return result;
+  }
+  async tick() { return this.runExclusive(() => this.recordDecision('tick', () => this.engine.tick())); }
+  async arm() { return this.runExclusive(() => this.recordDecision('arm', () => this.engine.arm())); }
+  async kill() { return this.runExclusive(() => this.recordDecision('kill', () => this.engine.kill())); }
+  async settle() { return this.runExclusive(() => this.engine.settle()); }
+  async newMandate() { return this.runExclusive(() => this.createMandate()); }
   async verify() { return verifyExecution({ fuse: this.engine.snapshot(), receipts: this.receipts, chain: this.chainReader() }); }
 }

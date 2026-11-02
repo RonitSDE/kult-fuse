@@ -54,7 +54,7 @@ export function verifyFuse({ fuse, receipts = [] }) {
     ok,
     checks,
     stats: { receipts: receipts.length, policyViolations, capViolations, killViolations },
-    summary: ok ? 'POLICY COMPLIANCE VERIFIED' : 'VERIFICATION FAILED'
+    summary: !receipts.length ? 'No execution to verify' : ok ? 'Policy checks passed; venue evidence pending' : 'VERIFICATION FAILED'
   };
 }
 
@@ -62,7 +62,7 @@ const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{86,88}$/;
 
 /**
  * Checks each venue fill against the chain, not against the worker's own word.
- * chain: { txStatus(signature, cluster?) -> { confirmed, err }, receiptHead() -> hex | null } (RPC-backed in production).
+ * chain: { txStatus(signature, cluster?), receiptHead(), venueEvidence(signature, receipt) }.
  * `cluster` is the venue's cluster from the receipt; null means the Fuse cluster.
  * A fill is VERIFIED only if its venue transaction and its record_fill anchor both confirmed without error,
  * the receipt carries its Fuse state, size, timestamp and residual, and policy checks pass.
@@ -89,10 +89,24 @@ export async function verifyExecution({ fuse, receipts = [], chain }) {
     const problems = [];
     const venue = await confirmed(r.txSignature, r.venueCluster);
     if (!venue.ok) problems.push(`venue tx ${venue.why}`);
+    else if (typeof chain?.venueEvidence !== 'function') problems.push('venue fill decoder unavailable');
+    else {
+      try {
+        const evidence = await chain.venueEvidence(r.txSignature, r);
+        if (!evidence?.ok) problems.push(`venue fill evidence ${evidence?.why || 'missing'}`);
+      } catch (e) { problems.push(`venue fill evidence error: ${e.message}`); }
+    }
     if (r.anchor?.status !== 'ANCHORED') problems.push(r.anchor?.status === 'FAILED' ? `anchoring failed: ${r.anchor.error}` : 'receipt not anchored onchain');
     else {
       const anchor = await confirmed(r.anchor.signature);
       if (!anchor.ok) problems.push(`anchor tx ${anchor.why}`);
+      else if (typeof chain?.fillEvidence !== 'function') problems.push('Fuse anchor decoder unavailable');
+      else {
+        try {
+          const evidence = await chain.fillEvidence(r.anchor.signature, r);
+          if (!evidence?.ok) problems.push(`Fuse anchor evidence ${evidence?.why || 'missing'}`);
+        } catch (e) { problems.push(`Fuse anchor evidence error: ${e.message}`); }
+      }
     }
     for (const field of ['fuseStatus', 'timestampMs', 'filledExposureAfterUsd', 'residualUsd']) {
       if (r[field] == null) problems.push(`missing ${field}`);
@@ -106,6 +120,10 @@ export async function verifyExecution({ fuse, receipts = [], chain }) {
   }
 
   const checks = [...policy.checks];
+  let committedPolicy = null;
+  try { committedPolicy = await chain.fuseState?.(); } catch (e) { committedPolicy = { error: e.message }; }
+  checks.push({ name: 'Onchain mandate commitment', ok: committedPolicy?.policyHash === fuse.policyHash,
+    expected: fuse.policyHash, actual: committedPolicy?.policyHash || committedPolicy?.error || 'missing' });
   let head = null;
   try { head = await chain.receiptHead(); } catch (e) { head = `RPC error: ${e.message}`; }
   const lastHash = receipts.at(-1)?.hash;

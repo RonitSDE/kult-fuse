@@ -21,7 +21,7 @@ export class AnchorFuseClient {
 
   async init() {
     const [anchor, web3] = await Promise.all([import('@coral-xyz/anchor'), import('@solana/web3.js')]);
-    const idlPath=this.env.FUSE_IDL_PATH || './contracts/fuse-anchor/target/idl/kult_fuse.json';
+    const idlPath=this.env.FUSE_IDL_PATH || './deploy/idl/kult_fuse.json';
     const idl=JSON.parse(await fs.readFile(idlPath,'utf8'));
     const secret=JSON.parse(this.env.FUSE_AUTHORITY_PRIVATE_KEY_JSON || this.env.FUSE_EXECUTION_PRIVATE_KEY_JSON || '[]');
     if(!Array.isArray(secret)||secret.length<32) throw new Error('FUSE_AUTHORITY_PRIVATE_KEY_JSON missing');

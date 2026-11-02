@@ -1,0 +1,7 @@
+# Authority binding: implementation gate, not a claim
+
+Current build: the worker controls the Drift wallet. A worker with its key can bypass Fuse entirely. The onchain cap, expiry and kill are checks on transactions **submitted to Fuse**. A successful over-cap refusal at Fuse is not a refusal at the venue boundary.
+
+To implement a bound version, first verify the target Drift deployment supports placing and closing orders through CPI with the user account authority set to a Fuse-owned PDA, or another enforceable delegation that cannot trade directly. Move effective order authority to that PDA; the worker holds no alternative authority, delegate, owner key, or transferable withdrawal control. Route every order through a Fuse instruction which reads the committed policy and fresh observation, actual venue position, expiry and kill state, caps the resulting venue order, applies bounded limit/IOC terms, and invokes Drift using PDA signer seeds. Emergency close must remain permitted after kill or stale data. If Drift cannot support this custody/delegation pattern, do not label authority bound.
+
+Acceptance tests must send **direct** over-cap and post-kill venue orders with every key available to the worker and show both denied at the authority boundary. A reduce-only close after kill must succeed. Revoke/rotate authority and recover an interrupted close. Run Anchor integration tests against the actual Drift program, independently audit the account constraints and deploy anew. Only then replace the UI's UNBOUND indicator and change the product claim.

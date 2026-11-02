@@ -9,15 +9,19 @@ export function validatePolicy(policy) {
   if (JSON.stringify(sorted) !== JSON.stringify(policy.steps)) throw new Error('steps must be sorted ascending');
   for (const step of policy.steps) {
     if (!Number.isInteger(step.pBps) || step.pBps < 0 || step.pBps > 10000) throw new Error('invalid pBps');
-    if (!Number.isFinite(step.exposureUsd) || step.exposureUsd < 0) throw new Error('invalid exposureUsd');
+    if (!Number.isSafeInteger(step.exposureUsd) || step.exposureUsd < 0) throw new Error('exposureUsd must be a nonnegative whole USD amount onchain');
     if (step.exposureUsd > policy.riskCapUsd) throw new Error('step exceeds riskCapUsd');
   }
   if (!(policy.killBelowBps >= 0 && policy.killBelowBps <= 10000)) throw new Error('invalid killBelowBps');
-  if (!(policy.riskCapUsd > 0)) throw new Error('riskCapUsd must be > 0');
+  if (!Number.isSafeInteger(policy.riskCapUsd) || policy.riskCapUsd <= 0) throw new Error('riskCapUsd must be a positive whole USD amount onchain');
+  if (!Number.isSafeInteger(policy.lossStopUsd) || policy.lossStopUsd < 0) throw new Error('lossStopUsd must be a nonnegative whole USD amount onchain');
+  if (!Number.isSafeInteger(policy.maxLeverageBps) || policy.maxLeverageBps <= 0) throw new Error('invalid maxLeverageBps');
+  if (!Number.isSafeInteger(policy.expiryTs) || policy.expiryTs <= 0) throw new Error('invalid expiryTs');
   if (!(policy.hysteresisBps >= 0 && policy.hysteresisBps <= 1000)) throw new Error('invalid hysteresisBps');
   if (!(policy.confirmationCount >= 1 && policy.confirmationCount <= 10)) throw new Error('invalid confirmationCount');
   if (!(policy.maxOracleAgeSec >= 1)) throw new Error('invalid maxOracleAgeSec');
   if (!(policy.maxSpreadBps >= 1)) throw new Error('invalid maxSpreadBps');
+  if (policy.minTopDepthUsd != null && (!Number.isFinite(policy.minTopDepthUsd) || policy.minTopDepthUsd < 0)) throw new Error('invalid minTopDepthUsd');
   return true;
 }
 

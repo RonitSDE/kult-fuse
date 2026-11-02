@@ -16,10 +16,10 @@ let replayTimer = null;
 const REPLAY_STEPS = [
   { p: 52, requested: null, kind: 'open', title: 'Open inside the 50% band' },
   { p: 64, requested: null, kind: 'resize', title: 'Step up inside the 60% band' },
-  { p: 74, requested: null, kind: 'resize', title: 'Step up inside the 70% band' },
+  { p: 84, requested: null, kind: 'resize', title: 'Step up inside the 80% band' },
   { p: 29, requested: 0, kind: 'kill', title: 'Probability falls through the kill threshold' },
   { p: 29, requested: 0, kind: 'closed', title: 'Position closed. Mandate locked.' },
-  { p: 80, requested: 500, kind: 'rejected', title: 'Agent requests $500 after the kill' }
+  { p: 84, requested: 'overCap', kind: 'rejected', title: 'An over-cap reopen is rejected after kill' }
 ];
 
 const TOKEN_KEY='kultFuseOperatorToken';
@@ -83,14 +83,14 @@ function renderCurve(fuse, pBps, force) {
   return { bps, permitted, killed };
 }
 
-function explorerUrl(kind,value){
-  const net=state?.integrity?.network||'devnet';
+function explorerUrl(kind,value,network){
+  const net=network||state?.integrity?.network||'devnet';
   return `https://solscan.io/${kind}/${encodeURIComponent(value)}${net==='mainnet-beta'?'':`?cluster=${encodeURIComponent(net)}`}`;
 }
 
 function receiptTxLink(r){
   const links=[];
-  if(isSignature(r.txSignature)) links.push(`<a href="${explorerUrl('tx',r.txSignature)}" target="_blank" rel="noreferrer">VIEW RECEIPT ↗</a>`);
+  if(isSignature(r.txSignature)) links.push(`<a href="${explorerUrl('tx',r.txSignature,r.venueCluster)}" target="_blank" rel="noreferrer">VENUE TX ↗</a>`);
   const anchored=r.chain?.txs?.filter(t=>t.ix==='record_fill').at(-1)||r.chain?.txs?.at(-1);
   if(anchored) links.push(`<a href="${explorerUrl('tx',anchored.signature)}" target="_blank" rel="noreferrer">ON-CHAIN ↗</a>`);
   return links.join(' ');
@@ -105,8 +105,9 @@ function renderLiveChainProof(f,integrity={}){
 
 function renderReceipts(receipts=[]) {
   $('#receiptCount').textContent=`${receipts.length} RECEIPT${receipts.length===1?'':'S'}`;
-  $('#proofReceiptCopy').textContent=receipts.length?`${receipts.length} tamper-evident receipt${receipts.length===1?'':'s'} chained`:'Waiting for first execution';
-  $('#proofReceipts').className=`proof-icon ${receipts.length?'':'muted'}`; $('#proofReceipts').textContent=receipts.length?'✓':'·';
+  const verified=Boolean(proofState?.verifiedRun?.source==='live' && receipts.length && proofState.verifiedRun.receipts.length===receipts.length && receipts.every((r,i)=>r.hash===proofState.verifiedRun.receipts[i]?.hash));
+  $('#proofReceiptCopy').textContent=verified?`${receipts.length} independently verified fill${receipts.length===1?'':'s'}`:receipts.length?`${receipts.length} receipt${receipts.length===1?'':'s'}; run the verifier`:'No fill to verify yet';
+  $('#proofReceipts').className=`proof-icon ${verified?'':'muted'}`; $('#proofReceipts').textContent=verified?'✓':'·';
   const el=$('#receipts');
   if(!receipts.length){el.className='receipts empty';el.textContent='No execution receipts yet.';return;}
   el.className='receipts';el.innerHTML='';
@@ -121,6 +122,30 @@ function renderReceipts(receipts=[]) {
 
 function setFlowActive(id,on=true){$(id)?.classList.toggle('active',on)}
 
+function renderDecisions(decisions=[]){
+  const root=$('#decisionJournal'); if(!root) return;
+  root.replaceChildren();
+  if(!decisions.length){root.textContent='No worker decisions recorded for this mandate.';return;}
+  for(const entry of [...decisions].reverse().slice(0,6)){
+    const row=document.createElement('div'); row.className='decision-entry';
+    const head=document.createElement('div'); head.className='decision-entry-head';
+    const outcome=document.createElement('strong');outcome.textContent=String(entry.outcome||'UNKNOWN').replaceAll('_',' ');
+    outcome.dataset.outcome=entry.outcome||'UNKNOWN';
+    const time=document.createElement('time');time.textContent=`${new Date(entry.at).toLocaleTimeString()}${entry.repeatCount>1?` · ×${entry.repeatCount}`:''}`;
+    head.append(outcome,time);
+    const detail=document.createElement('p');detail.textContent=entry.explanation||'No new execution.';
+    const meta=document.createElement('small');
+    const actual=entry.venueExposureUsd==null?'unavailable':money(entry.venueExposureUsd);
+    meta.textContent=`${entry.reason||'—'} · target ${money(entry.targetUsd)} · venue ${actual} · worker log only`;
+    row.append(head,detail,meta);
+    if(isSignature(entry.venueSignature)){
+      const link=document.createElement('a');link.href=explorerUrl('tx',entry.venueSignature,state?.position?.cluster);
+      link.target='_blank';link.rel='noreferrer';link.textContent='Venue tx · verify separately ↗';row.append(link);
+    }
+    root.append(row);
+  }
+}
+
 function setProofLink(selector, item) {
   const el=$(selector); if(!el) return;
   el.classList.remove('proof-live','proof-loading','proof-missing');
@@ -132,15 +157,6 @@ function setProofLink(selector, item) {
   }
   if(item?.value && item?.url){el.textContent=short(item.value);el.href=item.url;el.classList.add('proof-live'); return;}
   el.textContent='No transaction on this mandate yet'; el.classList.add('proof-missing'); el.removeAttribute('href');
-}
-
-function txForKind(kind){
-  const txs=proofState?.transactions||{};
-  if(kind==='open') return txs.flashOpen;
-  if(kind==='resize') return txs.flashResize;
-  if(kind==='kill'||kind==='rejected') return txs.kill;
-  if(kind==='closed') return txs.flashClose;
-  return null;
 }
 
 function showFeatured({prob,permitted,requested,actual,cap,nonce,hash,hashLabel,tx,verdict,raw}){
@@ -170,7 +186,7 @@ function renderIntegrity(integrity={}) {
   $('#integrityLabel').textContent=label; $('#integrityLabel').className=`proof-dot ${live?'proof-live':'proof-local'}`;
   $('#chainProofMode').textContent=label;
   $('#networkLabel').textContent=`${String(integrity.network||'devnet').toUpperCase()} · ${String(integrity.perpAdapter||'').toUpperCase()}`;
-  $('#venueLabel').textContent=String(integrity.perpAdapter||'flash').toLowerCase()==='flash'?'Flash Trade':'External driver';
+  $('#venueLabel').textContent=String(integrity.perpAdapter||'drift').toLowerCase()==='flash'?'Flash Trade':String(integrity.perpAdapter||'drift').toUpperCase();
   $('#eventSourceLabel').textContent=integrity.eventSource==='dflow'?'DFlow / Kalshi':'Polymarket';
   $('#proofBuild').textContent=`${integrity.buildTag||'dev'} · ${short(integrity.buildSha)}`;
 }
@@ -183,19 +199,19 @@ async function loadProof(){
     setProofLink('#proofPda',proofState.fuseAccount);
     setProofLink('#proofTarget',proofState.transactions?.target);
     setProofLink('#proofKillTx',proofState.transactions?.kill);
-    setProofLink('#proofFlashOpen',proofState.transactions?.flashOpen);
-    setProofLink('#proofFlashResize',proofState.transactions?.flashResize);
-    setProofLink('#proofFlashClose',proofState.transactions?.flashClose);
+    setProofLink('#proofVenueOpen',proofState.transactions?.venueOpen);
+    setProofLink('#proofVenueResize',proofState.transactions?.venueResize);
+    setProofLink('#proofVenueClose',proofState.transactions?.venueClose);
     const verified=proofState.verifiedRun;
     const ready=Boolean(verified?.receipts?.length && verified.receipts.every(r=>r?.hash && isSignature(r?.txSignature)));
     $('#verifiedReplayBtn')?.classList.toggle('hidden',!ready);
     if(ready && !replayTimer) $('#verifiedReplayBtn').textContent=verified.source==='live'?'VERIFIED REPLAY':'RECORDED REPLAY';
     renderIntegrity(proofState.integrity||{});
-    if(state && !replayMode) renderLiveChainProof(state.fuse,proofState.integrity);
+    if(state && !replayMode) render(state);
   }catch{
     proofFailed=true;
     $('#verifiedReplayBtn')?.classList.add('hidden');
-    for (const id of ['#proofProgram','#proofPda','#proofTarget','#proofKillTx','#proofFlashOpen','#proofFlashResize','#proofFlashClose']) setProofLink(id,null);
+    for (const id of ['#proofProgram','#proofPda','#proofTarget','#proofKillTx','#proofVenueOpen','#proofVenueResize','#proofVenueClose']) setProofLink(id,null);
   }
 }
 
@@ -217,31 +233,58 @@ function render(s) {
   $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—';
   $('#pnl').textContent=p.unrealizedPnlUsd==null?'—':money(p.unrealizedPnlUsd,2);
   const stop=Number(f.policy?.lossStopUsd||0);
-  if($('#lossStopNote')) $('#lossStopNote').textContent=stop>0?`Loss stop trigger: −$${stop} of Flash P&L including fees. The close fills at market, so the realized loss can exceed $${stop}. Fuse does not calculate that P&L.`:'No loss stop is configured.';
+  if($('#lossStopNote')) {
+    $('#lossStopNote').classList.toggle('hidden',!f.lossStop?.closeTxSignature);
+    $('#lossStopNote').textContent=stop>0?`Observed venue P&L triggered a close at −$${stop}. Execution price and final loss can differ; Fuse does not calculate P&L.`:'';
+  }
   const ls=f.lossStop, lsEl=$('#lossStopEvidence');
   if(lsEl){
     lsEl.classList.toggle('hidden',!ls);
-    if(ls) lsEl.innerHTML=`<b>Loss stop fired</b> ${new Date(ls.triggeredAt).toLocaleString()} at P&amp;L ${money(ls.triggerPnlUsd,2)} (trigger ${money(ls.thresholdUsd,2)}) on ${money(ls.positionUsd)}. Close receipt <code>${short(ls.closeReceiptHash)}</code> · ${isSignature(ls.closeTxSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',ls.closeTxSignature)}">close tx ${short(ls.closeTxSignature)}</a>`:'no close transaction recorded'} · residual ${money(ls.residualUsd)}.`;
+    if(ls) lsEl.innerHTML=`<b>Loss stop fired</b> ${new Date(ls.triggeredAt).toLocaleString()} at P&amp;L ${money(ls.triggerPnlUsd,2)} (trigger ${money(ls.thresholdUsd,2)}) on ${money(ls.positionUsd)}. Close receipt <code>${short(ls.closeReceiptHash)}</code> · ${isSignature(ls.closeTxSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',ls.closeTxSignature,p.cluster)}">close tx ${short(ls.closeTxSignature)}</a>`:'no close transaction recorded'} · residual ${money(ls.residualUsd)}.`;
   }
   const va=s.integrity?.venueAuthority;
-  if($('#authorityNote')&&va) $('#authorityNote').innerHTML=va.bound?`<b>Venue authority bound</b> to Fuse limits.`:`<b>Venue authority not bound.</b> ${va.limitation}`;
+  if($('#authorityNote')&&va) $('#authorityNote').textContent=va.bound?'Venue authority verified as bound by the deployed program.':`Venue authority not bound. ${va.limitation}`;
+  if($('#authorityHero')) $('#authorityHero').textContent=va?.bound?'BOUND':'UNBOUND';
+  if($('#trustBoundaryCopy')&&va) $('#trustBoundaryCopy').textContent=va.limitation;
   const q=s.quote;
   if($('#liveQuote')){
     if(q?.bid!=null && q?.ask!=null){
       const mid=((Number(q.bid)+Number(q.ask))/2)*100;
       $('#liveQuote').textContent=`${q.question||'Polymarket'}: ${mid.toFixed(1)}% · bid ${(Number(q.bid)*100).toFixed(1)}% · ask ${(Number(q.ask)*100).toFixed(1)}% · spread ${q.spreadBps} bps · ${Number(q.ageSec).toFixed(0)}s old`;
-    }else $('#liveQuote').textContent='Fetching Polymarket quote…';
+    }else $('#liveQuote').textContent='No current Polymarket quote. Risk increases are on hold.';
   }
+  $('#lastSync').textContent=`Backend synchronized ${new Date().toLocaleTimeString()} · ${s.integrity?.network||'unknown cluster'}`;
+  $('#clusterLabel').textContent=String(s.integrity?.network||'—').toUpperCase();
+  const actualUsd=Math.abs(Number(p.exposureUsd||0));
+  let action='HOLD',detail='Waiting for a usable quote and armed mandate.',tone='hold';
+  if(f.status==='KILLED') {
+    action=actualUsd>=0.01?'CLOSE PENDING':'KILLED · FLAT'; tone=actualUsd>=0.01?'danger':'hold';
+    detail=actualUsd>=0.01?`Fuse is killed but ${money(actualUsd)} remains on the venue. A separate close must confirm.`:'The venue reports zero exposure. This mandate cannot reopen through Fuse.';
+  } else if(!['ARMED','OPEN','REDUCING'].includes(f.status)) {
+    detail=f.status==='PROPOSED'?'The operator must arm the committed policy before the worker can trade.':'This mandate has settled.';
+  } else if(!q || !q.quality) {
+    detail=q?`${q.qualityReason} quote: no new risk increase. Existing venue exposure is ${money(actualUsd)}.`:'Quote unavailable: no new risk increase.';
+  } else if(Number(f.desiredExposureUsd)>Number(p.exposureUsd)+Number(f.policy.minRebalanceUsd||0)) {
+    action='INCREASE REQUESTED';tone='active';detail='The committed curve permits this target. Check the venue fill separately.';
+  } else if(Number(f.desiredExposureUsd)<Number(p.exposureUsd)-Number(f.policy.minRebalanceUsd||0)) {
+    action='REDUCE REQUESTED';tone='warn';detail='The venue position is above the target. A reduction still needs a venue fill.';
+  } else {
+    action='WITHIN TARGET';tone='active';detail='The actual venue position is near the current target. Inspect receipts for execution proof.';
+  }
+  $('#decisionTitle').textContent=action;$('#decisionDetail').textContent=detail;
+  $('#decisionPermitted').textContent=money(f.desiredExposureUsd);$('#decisionActual').textContent=money(p.exposureUsd);
+  $('#decisionIcon').textContent=tone==='danger'?'!':tone==='active'?'↗':'·';
+  $('.decision-panel').dataset.tone=tone;
   $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.policyHash);
   $('#expectedTarget').textContent=money(f.status==='KILLED'||pDisplay==null?0:rawTarget(f.policy,Math.round(pDisplay*100)));
-  $('#policyResult').textContent=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'WITHIN MANDATE':'VIOLATION';
-  $('#policyResult').className=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd?'green':'';
+  $('#policyResult').textContent=Math.abs(f.desiredExposureUsd)>f.policy.riskCapUsd?'VIOLATION':f.status==='PROPOSED'?'NOT ARMED':!q?.quality?'NO INCREASE':'TARGET IN BOUNDS';
+  $('#policyResult').className=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd&&q?.quality?'green':'';
   const util=Math.min(100,Math.abs(Number(p.exposureUsd||0))/f.policy.riskCapUsd*100); $('#riskBar').style.width=`${util}%`; $('#riskUtil').textContent=`${util.toFixed(0)}%`;
   const op=Boolean(operatorToken()), active=['ARMED','OPEN','REDUCING'].includes(f.status);
   $('#armBtn').disabled=!op||f.status!=='PROPOSED';
   $('#tickBtn').disabled=!op||!active;
   $('#emergencyKillBtn').disabled=!op||['PROPOSED','KILLED','SETTLED'].includes(f.status);
-  $('#settleBtn').disabled=!op||!['KILLED','ARMED','OPEN','REDUCING'].includes(f.status);
+  $('#settleBtn').disabled=!op||!['KILLED','ARMED','OPEN','REDUCING'].includes(f.status)||Math.abs(Number(p.exposureUsd||0))>=0.01;
   $('#newFuseBtn').disabled=!op||!['KILLED','SETTLED'].includes(f.status);
   $('#operatorBtn').textContent=op?'Operator · signed in':'Operator';
 
@@ -258,14 +301,21 @@ function render(s) {
   }else{
     $('#bid').textContent='—';$('#ask').textContent='—';$('#spread').textContent='—';$('#sequence').textContent=f.oracleSequence||0;$('#signalQuality').textContent='AWAITING SIGNAL';$('#flowSource').textContent=String(s.integrity?.eventSource||'').toUpperCase();
   }
-  $('#flowProofText').textContent=receipts.length?`${receipts.length} RECEIPT${receipts.length===1?'':'S'}`:'READY';
-  setFlowActive('#flowSignal',true);setFlowActive('#flowPolicy',f.desiredExposureUsd!==0||f.status==='KILLED');setFlowActive('#flowPosition',Math.abs(Number(p.exposureUsd||0))>0||f.status==='KILLED');setFlowActive('#flowProof',receipts.length>0);
-  $('#proofKill').textContent=f.status==='KILLED'?'✓':'✓';
+  const runVerified=Boolean(proofState?.verifiedRun?.source==='live' && receipts.length && proofState.verifiedRun.receipts.length===receipts.length && receipts.every((r,i)=>r.hash===proofState.verifiedRun.receipts[i]?.hash));
+  $('#flowProofText').textContent=runVerified?'VERIFIED':receipts.length?'CHECK FILLS':'NO FILLS';
+  setFlowActive('#flowSignal',Boolean(q?.quality));setFlowActive('#flowPolicy',f.desiredExposureUsd!==0||f.status==='KILLED');setFlowActive('#flowPosition',Math.abs(Number(p.exposureUsd||0))>0||f.status==='KILLED');setFlowActive('#flowProof',runVerified);
+  const onchainKill=f.status==='KILLED'&&(f.chainTxs||[]).some(t=>String(t.ix).startsWith('trigger_')&&isSignature(t.signature));
+  $('#proofKill').textContent=onchainKill?'✓':'·'; $('#proofKill').className=`proof-icon ${onchainKill?'':'muted'}`;
+  const committed=(f.chainTxs||[]).some(t=>t.ix==='init_fuse'&&isSignature(t.signature));
+  $('#proofCommit').textContent=committed?'✓':'·'; $('#proofCommit').className=`proof-icon ${committed?'':'muted'}`;
+  const targetProven=(f.chainTxs||[]).some(t=>t.ix==='set_target'&&isSignature(t.signature));
+  $('#proofCurve').textContent=targetProven?'✓':'·'; $('#proofCurve').className=`proof-icon ${targetProven?'':'muted'}`;
   const curve=renderCurve(f);
   const latest=receipts.at(-1);
   if(!replayMode){
-    const marketName=s.market?.question||'Bitcoin probability';
-    $('#heroExample').textContent=`${marketName} moving from 52% to 71% raises the permitted SOL-perp exposure from $200 to $420. That size is the committed curve, not an agent choice. Under 35% the mandate is killed and cannot be reopened.`;
+    const steps=f.policy.steps||[];
+    const example=steps.length>1?`${pct(steps[0].pBps/100)} permits ${money(steps[0].exposureUsd)}; ${pct(steps[1].pBps/100)} permits ${money(steps[1].exposureUsd)}.`:'The user commits an exposure rule before execution.';
+    $('#heroExample').textContent=`${example} The quote proposes a target on ${f.policy.marketId||'the selected perp'}. Fuse checks the target; verify a venue fill separately. The worker's venue key is ${va?.bound?'bound to the policy':'not yet bound'}.`;
     $('#heroMarket').textContent=s.market?.question?`Committed market · ${s.market.question}`:'Committed market loading…';
     if(latest){
       showFeatured({
@@ -276,8 +326,8 @@ function render(s) {
         cap:money(f.policy.riskCapUsd),
         nonce:String(latest.sequence),
         hash:latest.hash,
-        tx:isSignature(latest.txSignature)?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature)}:(latest.chain?.txs?.at(-1)?{value:latest.chain.txs.at(-1).signature,url:explorerUrl('tx',latest.chain.txs.at(-1).signature)}:txForKind(latest.reason==='KILL_PROBABILITY'||latest.reason==='EMERGENCY_KILL'?'kill':'open')),
-        verdict:isSignature(latest.txSignature)?'PASS':'WAITING',
+        tx:isSignature(latest.txSignature)?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature,latest.venueCluster)}:null,
+        verdict:proofState?.verifiedRun?.source==='live'&&proofState.verifiedRun.receipts.some(r=>r.hash===latest.hash)?'PASS':'WAITING',
         raw:JSON.stringify(latest,null,2)
       });
     }else if(curve){
@@ -291,12 +341,12 @@ function render(s) {
         hash:f.lastReceiptHash||f.policyHash,
         hashLabel:f.lastReceiptHash?'RECEIPT HASH':'POLICY HASH',
         tx:null,
-        verdict:curve.bps==null?'WAITING':'PASS',
+        verdict:'WAITING',
         raw:f.lastReceiptHash?`policy ${f.policyHash}\nreceipt head ${f.lastReceiptHash}`:`policy ${f.policyHash}`
       });
     }
   }
-  renderReceipts(receipts);renderLiveChainProof(f,s.integrity);
+  renderReceipts(receipts);renderDecisions(s.decisions||[]);renderLiveChainProof(f,s.integrity);
 }
 
 function applyReplayStep(step,index){
@@ -304,7 +354,7 @@ function applyReplayStep(step,index){
   const bps=Math.round(step.p*100);
   const killed=step.kind==='kill'||step.kind==='closed'||step.kind==='rejected';
   const permitted=killed?0:rawTarget(f.policy,bps);
-  const requested=step.requested==null?permitted:step.requested;
+  const requested=step.requested==='overCap'?f.policy.riskCapUsd+10:step.requested==null?permitted:step.requested;
   const actual=step.kind==='rejected'||step.kind==='closed'||step.kind==='kill'?0:permitted;
   const rejected=step.kind==='rejected'||(requested>permitted);
   renderCurve(f,bps,killed?{killed:true,permitted:0}:undefined);
@@ -325,10 +375,11 @@ function applyReplayStep(step,index){
   const killEl=$('#killMoment');
   killEl.classList.toggle('hidden',!killed);
   $('#killMomentTitle').textContent=step.kind==='rejected'
-    ?'KILLED → position closed → mandate permanently locked.'
-    :'KILLED → position closed → mandate permanently locked.';
+    ?'Simulation: killed mandate rejects a reopen.'
+    :'Simulation: killed mandate requests a close.';
   $('#rejectLine').classList.toggle('hidden',step.kind!=='rejected');
-  const tx=txForKind(step.kind);
+  if(step.kind==='rejected') $('#rejectLine').textContent=`Simulation: the agent requests ${money(requested)}. The killed mandate refuses a reopen; permitted exposure remains $0.`;
+  const tx=null; // A paper story never borrows a real explorer link.
   showFeatured({
     prob:pct(step.p),
     permitted:money(permitted,0),
@@ -385,7 +436,7 @@ function applyVerifiedReceipt(receipt,index,total){
     nonce:String(receipt.sequence),
     hash:receipt.hash,
     hashLabel:'RECEIPT HASH',
-    tx:isSignature(receipt.txSignature)?{value:receipt.txSignature,url:explorerUrl('tx',receipt.txSignature)}:null,
+    tx:isSignature(receipt.txSignature)?{value:receipt.txSignature,url:explorerUrl('tx',receipt.txSignature,receipt.venueCluster)}:null,
     verdict:'PASS',
     raw:JSON.stringify(receipt,null,2)
   });
@@ -424,14 +475,30 @@ function startReplay(){
   },1600);
 }
 
-async function refresh(){const s=await api('/api/state');state=s;if(!replayMode)render(s);return s;}
-async function mutate(path,body,{quiet=false}={}){try{const out=await api(path,body);await refresh();if(!quiet)toast('State updated');return out}catch(e){toast(e.message,'bad');throw e}}
+let refreshing=null;
+async function refresh(){
+  if(refreshing) return refreshing;
+  refreshing=(async()=>{
+    try{
+      const s=await api('/api/state');state=s;
+      $('#connectionBanner').classList.add('hidden');
+      if(!replayMode)render(s);
+      return s;
+    }catch(e){
+      $('#connectionBanner').classList.remove('hidden');
+      $('#lastSync').textContent='Backend unavailable · displayed state may be old';
+      throw e;
+    }finally{refreshing=null;}
+  })();
+  return refreshing;
+}
+async function mutate(path,body,{quiet=false}={}){try{const out=await api(path,body);await refresh();if(!quiet)toast('State updated');return out}catch(e){await refresh().catch(()=>{});toast(e.message,'bad');throw e}}
 
 function renderMarket(m){
   if(!m) return;
   $('#marketQuestion').textContent=m.question||m.id;
   $('#outcomeLabel').textContent=String(m.outcome||'YES').toUpperCase();
-  const link=$('#marketLink'); link.textContent=`LIVE · ${String(m.kind||'').toUpperCase()}`;
+  const link=$('#marketLink'); link.textContent=`${state?.quote?.quality?'LIVE':'UNUSABLE'} · ${String(m.kind||'').toUpperCase()}`;
   if(m.url) link.href=m.url; else link.removeAttribute('href');
 }
 
@@ -445,32 +512,41 @@ async function runVerifier(){
     v.checks.forEach(c=>{const d=document.createElement('div');d.className=`verify-check ${c.ok?'ok':'bad'}`;d.innerHTML=`<i>${c.ok?'✓':'✕'}</i><b>${esc(c.name)}</b><small>${esc(String(c.actual).slice(0,60))}</small>`;panel.appendChild(d)});
     // Only a fill that passed every chain check is labelled Verified.
     (v.fills||[]).forEach(fl=>{const d=document.createElement('div');const ok=fl.status==='VERIFIED';d.className=`verify-check ${ok?'ok':'bad'}`;
-      d.innerHTML=`<i>${ok?'✓':'!'}</i><b>${ok?'Verified':'Unverified'} · ${esc(fl.reason.replaceAll('_',' '))}</b><small>${money(fl.positionUsd)} · residual ${money(fl.residualUsd)} · ${esc(fl.fuseStatus)} · ${new Date(fl.timestampMs).toLocaleTimeString()}</small>${isSignature(fl.txSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.txSignature)}">venue tx</a>`:''}${isSignature(fl.anchorSignature)?` <a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.anchorSignature)}">anchor tx</a>`:''}${fl.problems.length?`<small>${esc(fl.problems.join('; '))}</small>`:''}`;panel.appendChild(d)});
+      d.innerHTML=`<i>${ok?'✓':'!'}</i><b>${ok?'Verified':'Unverified'} · ${esc(fl.reason.replaceAll('_',' '))}</b><small>${money(fl.positionUsd)} · residual ${money(fl.residualUsd)} · ${esc(fl.fuseStatus)} · ${new Date(fl.timestampMs).toLocaleTimeString()}</small>${isSignature(fl.txSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.txSignature,fl.venueCluster)}">venue tx</a>`:''}${isSignature(fl.anchorSignature)?` <a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.anchorSignature)}">anchor tx</a>`:''}${fl.problems.length?`<small>${esc(fl.problems.join('; '))}</small>`:''}`;panel.appendChild(d)});
     const ok=v.status==='VERIFIED';
-    sec.classList.remove('hidden'); sec.scrollIntoView({behavior:'smooth',block:'center'}); toast(v.summary,ok?'good':v.status==='NO_EXECUTION'?'good':'bad'); return v;
+    sec.classList.remove('hidden'); sec.scrollIntoView({behavior:'smooth',block:'center'}); toast(v.summary,ok?'good':v.status==='NO_EXECUTION'?'neutral':'bad'); return v;
   }catch(e){toast(e.message,'bad');throw e}
 }
 
 async function operatorLogin(){
   if(operatorToken()){setOperatorToken('');await refresh();return toast('Operator signed out');}
-  const t=window.prompt('Operator token (FUSE_ADMIN_TOKEN)');
-  if(!t) return;
-  setOperatorToken(t.trim());
-  try{await api('/api/auth',{});toast('Operator signed in');}catch(e){setOperatorToken('');toast('Invalid operator token','bad');}
-  await refresh();
+  $('#operatorError').classList.add('hidden');
+  $('#operatorDialog').showModal();
+  $('#operatorTokenInput').focus();
 }
+
+$('#operatorForm').onsubmit=async(e)=>{
+  e.preventDefault();
+  const input=$('#operatorTokenInput'), error=$('#operatorError');
+  setOperatorToken(input.value.trim());
+  try{await api('/api/auth',{});input.value='';$('#operatorDialog').close();await refresh();toast('Operator signed in');}
+  catch(e){setOperatorToken('');error.textContent=e.message;error.classList.remove('hidden');}
+};
+$('#cancelOperator').onclick=()=>{$('#operatorTokenInput').value='';$('#operatorDialog').close()};
 
 $('#tickBtn').onclick=()=>tick();
 $('#armBtn').onclick=()=>mutate('/api/arm',{});
-$('#emergencyKillBtn').onclick=()=>mutate('/api/kill',{}).then(()=>toast('Emergency kill committed'));
+$('#emergencyKillBtn').onclick=()=>mutate('/api/kill',{}).then(()=>toast('Kill requested. Confirm the chain and venue close.'));
 $('#settleBtn').onclick=()=>mutate('/api/settle',{}).then(()=>toast('Fuse settled'));
 $('#newFuseBtn').onclick=async()=>{await mutate('/api/fuse/new',{}, {quiet:true});$('#verifySection').classList.add('hidden');await loadProof();toast('New mandate created on-chain')};
 $('#operatorBtn').onclick=operatorLogin;
-$('#watchLiveBtn').onclick=()=>stopReplay();
+$('#watchLiveBtn').onclick=()=>{stopReplay();$('#marketQuestion').scrollIntoView({behavior:'smooth',block:'center'});};
+$('#retryConnection').onclick=()=>refresh().then(()=>loadProof()).catch(e=>toast(e.message,'bad'));
 $('#replayBtn').onclick=()=>{if(replayTimer)stopReplay();else startReplay();};
 $('#verifiedReplayBtn').onclick=()=>{if(replayTimer)stopReplay();else startVerified();};
 $('#verifyBtn2').onclick=runVerifier;$('#closeVerify').onclick=()=>$('#verifySection').classList.add('hidden');
 
-Promise.all([refresh(),loadProof()]).catch(e=>toast(e.message,'bad'));
+refresh().catch(e=>toast(e.message,'bad'));
+loadProof().catch(()=>{});
 // The server worker trades continuously; keep the dashboard in step with it.
-setInterval(()=>refresh().catch(()=>{}),5000);
+setInterval(()=>{if(!document.hidden)refresh().catch(()=>{});},5000);

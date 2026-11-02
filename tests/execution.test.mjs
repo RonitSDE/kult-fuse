@@ -54,6 +54,33 @@ test('loss stop fires even when the quote is stale', async () => {
   assert.equal((await x.perp.getPosition()).exposureUsd, 0);
 });
 
+test('expiry kills and closes an open position when the quote source is unavailable', async () => {
+  const x = fixture();
+  await x.engine.arm();
+  await x.engine.tick(); await x.engine.tick();
+  assert.ok((await x.perp.getPosition()).exposureUsd > 0);
+  x.fuse.policy.expiryTs = Math.floor(Date.now() / 1000) - 1;
+  x.event.read = async () => { throw new Error('market API offline'); };
+  const out = await x.engine.tick();
+  assert.equal(out.receipt.reason, 'EXPIRY_CLOSE');
+  assert.equal(x.fuse.status, 'KILLED');
+  assert.equal((await x.perp.getPosition()).exposureUsd, 0);
+  await x.engine.tick();
+  assert.equal((await x.perp.getPosition()).exposureUsd, 0);
+});
+
+test('expiry on a flat armed mandate creates no venue order or execution receipt', async () => {
+  const x = fixture();
+  await x.engine.arm();
+  x.fuse.policy.expiryTs = Math.floor(Date.now() / 1000) - 1;
+  x.event.read = async () => { throw new Error('market API offline'); };
+  x.perp.executeTarget = async () => { throw new Error('must not send a zero-sized venue order'); };
+  const out = await x.engine.tick();
+  assert.equal(out.executed, false);
+  assert.equal(x.fuse.status, 'KILLED');
+  assert.equal(x.receipts.length, 0);
+});
+
 test('verifier: zero fills shows "No execution to verify", never a pass', async () => {
   const x = fixture();
   const v = await verifyExecution({ fuse: x.engine.snapshot(), receipts: [], chain: { txStatus: async () => ({ confirmed: true }), receiptHead: async () => null } });
@@ -92,7 +119,7 @@ test('verifier: fills confirmed and anchored onchain are Verified', async () => 
   await x.engine.tick(); await x.engine.tick();           // open
   x.event.setProbability(0.72); await x.engine.tick(); await x.engine.tick(); // resize
   await x.engine.kill();                                  // close
-  const v = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts, chain: { txStatus: async () => ({ confirmed: true, err: null }), receiptHead: async () => c.head() } });
+  const v = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts, chain: { txStatus: async () => ({ confirmed: true, err: null }), receiptHead: async () => c.head(), venueEvidence: async () => ({ ok: true, fills: 1 }), fillEvidence: async () => ({ ok: true }), fuseState: async () => ({ policyHash: x.fuse.policyHash }) } });
   assert.equal(v.status, 'VERIFIED', JSON.stringify(v.checks.filter((k) => !k.ok)));
   assert.equal(v.fills.length, 3);
   assert.ok(v.fills.every((f) => f.status === 'VERIFIED' && f.residualUsd != null && f.fuseStatus));
@@ -106,7 +133,7 @@ test('verifier: an anchoring failure is Unverified, never a pass', async () => {
   await x.engine.arm();
   await x.engine.tick(); await x.engine.tick();
   assert.equal(x.receipts.at(-1).anchor.status, 'FAILED');
-  const v = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts, chain: { txStatus: async () => ({ confirmed: true, err: null }), receiptHead: async () => c.head() } });
+  const v = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts, chain: { txStatus: async () => ({ confirmed: true, err: null }), receiptHead: async () => c.head(), venueEvidence: async () => ({ ok: true, fills: 1 }), fillEvidence: async () => ({ ok: true }), fuseState: async () => ({ policyHash: x.fuse.policyHash }) } });
   assert.equal(v.status, 'UNVERIFIED');
   assert.equal(v.ok, false);
   assert.match(v.fills[0].problems.join(), /anchoring failed/);
@@ -139,5 +166,54 @@ test('thin or stale quotes give no increase and explain why', async () => {
   await x.engine.arm();
   const out = await x.engine.tick({ bid: 0.8, ask: 0.81, bidDepthUsd: 5, askDepthUsd: 5, observedAtMs: Date.now(), sequence: 1, source: 'test' });
   assert.equal(out.reason, 'ORACLE_THIN');
+  assert.equal((await x.perp.getPosition()).exposureUsd, 0);
+});
+
+test('confirmed signature without decoded venue fill cannot be Verified', async () => {
+  const c = chainHooks();
+  const x = fixture({ chainHooks: c.hooks });
+  solanaFills(x.perp);
+  await x.engine.arm();
+  await x.engine.tick(); await x.engine.tick();
+  const chain = { txStatus: async () => ({ confirmed: true, err: null }), receiptHead: async () => c.head() };
+  const noDecoder = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts, chain });
+  assert.equal(noDecoder.status, 'UNVERIFIED');
+  assert.match(noDecoder.fills[0].problems.join(), /decoder unavailable/);
+  const wrongFill = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts,
+    chain: { ...chain, venueEvidence: async () => ({ ok: false, why: 'wrong account' }) } });
+  assert.equal(wrongFill.status, 'UNVERIFIED');
+});
+
+test('onchain policy mismatch and unmatched anchor prevent VERIFIED', async () => {
+  const c = chainHooks(); const x = fixture({ chainHooks: c.hooks });
+  solanaFills(x.perp); await x.engine.arm(); await x.engine.tick(); await x.engine.tick();
+  const base = { txStatus: async () => ({ confirmed: true, err: null }), receiptHead: async () => c.head(),
+    venueEvidence: async () => ({ ok: true }), fillEvidence: async () => ({ ok: false, why: 'wrong Fuse' }) };
+  const v = await verifyExecution({ fuse: x.engine.snapshot(), receipts: x.receipts,
+    chain: { ...base, fuseState: async () => ({ policyHash: '0'.repeat(64) }) } });
+  assert.equal(v.status, 'UNVERIFIED');
+  assert.match(v.fills[0].problems.join(), /wrong Fuse/);
+  assert.ok(v.checks.some((check) => check.name === 'Onchain mandate commitment' && !check.ok));
+});
+
+test('venue no-fill creates no execution receipt and kill retries a close', async () => {
+  const x = fixture();
+  const original = x.perp.executeTarget.bind(x.perp);
+  x.perp.executeTarget = async () => ({ ok: true, txSignature: null });
+  await x.engine.arm();
+  await x.engine.tick();
+  const pending = await x.engine.tick();
+  assert.equal(pending.reason, 'NO_VENUE_FILL');
+  assert.equal(x.receipts.length, 0);
+  x.perp.executeTarget = original;
+  await x.engine.tick();
+  assert.equal(x.receipts.length, 1);
+  x.perp.executeTarget = async () => ({ ok: true, txSignature: null });
+  await x.engine.kill();
+  assert.equal(x.fuse.status, 'KILLED');
+  assert.equal(x.receipts.length, 1);
+  x.perp.executeTarget = original;
+  await x.engine.tick();
+  assert.equal(x.receipts.length, 2);
   assert.equal((await x.perp.getPosition()).exposureUsd, 0);
 });

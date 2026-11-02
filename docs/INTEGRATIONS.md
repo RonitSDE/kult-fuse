@@ -1,19 +1,9 @@
 # Integrations
 
-## Polymarket
-Default live prediction source (public Gamma + CLOB APIs). Fuse derives a probability mark from the outcome token's best bid/ask and blocks risk increases for stale or excessively wide markets.
+Polymarket public Gamma/CLOB data supplies the event's YES book. The oracle worker submits a quote observation to Fuse; its honesty remains a trust assumption. Select an event directly related to the traded SOL perp and check spread, age and depth.
 
-## DFlow / Kalshi
-Alternative live prediction source (`EVENT_SOURCE=dflow`, requires an API key).
+Drift SOL-PERP is the preferred venue adapter. It places a bounded IOC limit order, then reconciles actual base exposure. A read-only decoder checks Drift fill events in the venue transaction against receipt delta. Runtime SDK compatibility, liquidity and a funded wallet still need a live integration test.
 
-## Solana RPC
-Any devnet RPC (public `api.devnet.solana.com` or a provider such as OrbitFlare) for Fuse account state, transaction submission/confirmation and program logs.
+The Solana/Anchor Fuse program commits the policy and validates submitted target updates. It records a receipt hash after an external fill is reported. It does not hold the Drift key or receive an atomic venue execution guarantee.
 
-## Flash Trade
-Primary perp execution adapter for the submission proof. The adapter reconciles actual venue position before and after each absolute target update. The v1 Fuse deployment uses the mature `flash-sdk` devnet path (`devnet.1`) for an auditable open → resize → close chain proof.
-
-## KULT Fuse Anchor
-Stores and enforces mandate state: piecewise curve, hard cap, expiry, authorized roles, replay protection, absorbing kill and target validation.
-
-## Generic driver
-A fallback integration boundary remains for venue replacement without changing the Fuse engine. It is not used as the headline submission path.
+Flash Trade and DFlow adapters remain in source for historical work, but are outside this release's judge path. The previous Flash devnet open was blocked by InstructionNotAllowed. Do not present old Fuse-only signatures as venue execution.

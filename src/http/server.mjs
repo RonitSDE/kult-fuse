@@ -31,6 +31,7 @@ async function api(req, res, url) {
   try {
     if (req.method === 'POST' && !PUBLIC_POSTS.has(url.pathname) && !authorized(req)) return json(res, 401, { error: 'operator token required' });
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await runtime.getState());
+    if (req.method === 'GET' && url.pathname === '/api/decisions') return json(res, 200, { fuseId: runtime.engine.fuse.id, evidence: 'WORKER_LOG_ONLY', decisions: runtime.decisions || [] });
     if (req.method === 'GET' && url.pathname === '/api/proof') return json(res, 200, await runtime.proof());
     if (req.method === 'POST' && url.pathname === '/api/arm') return json(res, 200, await runtime.arm());
     if (req.method === 'POST' && url.pathname === '/api/kill') return json(res, 200, await runtime.kill());
@@ -55,7 +56,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname === '/healthz') {
     const i = runtime.integrity();
-    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.2.0', network: i.network, market: runtime.market?.id, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quoteView(), quoteError: runtime.quoteError || null, time: new Date().toISOString() });
+    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.6.0', network: i.network, market: runtime.market?.id, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quoteView(), quoteError: runtime.quoteError || null, time: new Date().toISOString() });
   }
   if (url.pathname.startsWith('/api/')) return api(req, res, url);
   let rel = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -74,18 +75,18 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`KULT Fuse running on http://localhost:${port}`);
-  console.log(`market=${runtime.market.kind}:${runtime.market.id} perp=${process.env.PERP_ADAPTER || 'flash'} fuse=${runtime.activeFusePda()}`);
+  console.log(`market=${runtime.market.kind}:${runtime.market.id} perp=${process.env.PERP_ADAPTER || 'drift'} fuse=${runtime.activeFusePda()}`);
   runtime.startQuoteWatch();
 });
 
 // The live worker polls the market and reconciles the position; disable only for maintenance.
-if (String(process.env.AUTO_WORKER || '1') === '1') {
+if (String(process.env.AUTO_WORKER || '0') === '1') {
   const ms = Math.max(1000, Number(process.env.AUTO_WORKER_MS || 3000));
   console.log(`auto worker enabled: ${ms}ms`);
   setInterval(async () => {
     try {
       const status = runtime.engine.fuse.status;
-      if (['ARMED','OPEN','REDUCING'].includes(status)) await runtime.tick();
+      if (['ARMED','OPEN','REDUCING','KILLED'].includes(status)) await runtime.tick();
     } catch (e) { console.error('auto worker tick failed:', e.message); }
   }, ms).unref();
 }

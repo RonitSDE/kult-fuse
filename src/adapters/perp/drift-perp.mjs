@@ -1,13 +1,15 @@
 /**
  * Drift Protocol adapter: one SOL-PERP long, reconciled to an absolute USD target.
  *
- * Every order is a place-and-take market order, so the fill lands in the same
- * transaction whose signature goes into the receipt. getPosition() is read before
- * and after every mutation; the receipt never trusts the order, only the account.
+ * A bounded, immediate-or-cancel order prevents a resting order from reopening
+ * exposure after kill. A transaction signature is not treated as a fill unless
+ * the position account actually changes.
  *
  * Drift's unrealized P&L is computed from the position's quote entry amount, which
  * already has trading fees taken out, so the loss stop sees P&L net of fees.
  */
+import { driftVenueEvidence } from './drift-evidence.mjs';
+
 export class DriftPerpAdapter {
   constructor(opts = {}) {
     this.opts = {
@@ -26,6 +28,9 @@ export class DriftPerpAdapter {
   get cluster() { return this.opts.env; }
 
   async init() {
+    if (!Number.isFinite(this.opts.maxSlippageBps) || this.opts.maxSlippageBps <= 0 || this.opts.maxSlippageBps > 1000) {
+      throw new Error('DRIFT maxSlippageBps must be within (0, 1000]');
+    }
     const [d, web3] = await Promise.all([import('@drift-labs/sdk'), import('@solana/web3.js')]);
     const sdk = d.default?.DriftClient ? d.default : d;
     const secret = JSON.parse(this.opts.privateKeyJson || '[]');
@@ -122,15 +127,21 @@ export class DriftPerpAdapter {
 
   _roundBase(base) { return Math.floor(base / this.stepBase + 1e-9) * this.stepBase; }
 
-  async _marketOrder(direction, baseAmount, reduceOnly) {
+  async _boundedOrder(direction, baseAmount, reduceOnly, referencePrice) {
     const { sdk, client } = this;
-    const params = sdk.getMarketOrderParams({
+    if (!Number.isFinite(referencePrice) || referencePrice <= 0) throw new Error('stale/invalid perp oracle price');
+    const limitPrice = referencePrice * (1 + (direction === 'long' ? 1 : -1) * this.opts.maxSlippageBps / 10_000);
+    const params = sdk.getLimitOrderParams({
       marketIndex: this.opts.marketIndex,
+      marketType: sdk.MarketType.PERP,
       direction: direction === 'long' ? sdk.PositionDirection.LONG : sdk.PositionDirection.SHORT,
       baseAssetAmount: client.convertToPerpPrecision(baseAmount),
-      reduceOnly
+      price: new sdk.BN(Math.floor(limitPrice * 1e6)),
+      reduceOnly,
+      immediateOrCancel: true
     });
-    return client.placeAndTakePerpOrder(params, undefined, undefined, undefined, undefined, undefined, this.opts.subAccountId);
+    // switchActiveUser() already scoped this client to the dedicated Fuse subaccount.
+    return client.placeAndTakePerpOrder(params);
   }
 
   async executeTarget(targetUsd, { reduceOnly = false } = {}) {
@@ -148,14 +159,20 @@ export class DriftPerpAdapter {
     let txSignature;
     if (desired === 0) {
       if (before.baseAmount === 0) return { ok: true, txSignature: null, venueRef: before.positionRef, before, after: before, deltaUsd: 0 };
-      txSignature = await this._marketOrder('short', before.baseAmount, true);
+      txSignature = await this._boundedOrder('short', before.baseAmount, true, before.markPrice);
     } else {
       const baseDelta = this._roundBase(Math.abs(delta) / before.markPrice);
       if (baseDelta < this.minBase) return { ok: true, txSignature: null, venueRef: before.positionRef, before, after: before, deltaUsd: 0 };
-      txSignature = await this._marketOrder(delta > 0 ? 'long' : 'short', baseDelta, delta < 0);
+      txSignature = await this._boundedOrder(delta > 0 ? 'long' : 'short', baseDelta, delta < 0, before.markPrice);
     }
 
     const after = await this._settle(before);
+    if (Math.abs(after.baseAmount - before.baseAmount) < this.stepBase / 2) {
+      const error = new Error(`venue order ${txSignature} confirmed but no SOL-PERP fill; exposure unchanged`);
+      error.code = 'VENUE_NO_FILL';
+      error.venueSignature = txSignature;
+      throw error;
+    }
     return { ok: true, txSignature, venueRef: after.positionRef, before, after, deltaUsd: after.exposureUsd - before.exposureUsd, cluster: this.cluster };
   }
 
@@ -172,4 +189,13 @@ export class DriftPerpAdapter {
   }
 
   async close() { return this.executeTarget(0, { reduceOnly: true }); }
+
+  async verifyFillTransaction(signature, receipt) {
+    await this.ensureReady();
+    return driftVenueEvidence({
+      connection: this.connection, program: this.client.program, user: this.userPk.toBase58(),
+      marketIndex: this.opts.marketIndex, signature, receipt,
+      toleranceBase: Math.max(this.stepBase, 1e-8)
+    });
+  }
 }

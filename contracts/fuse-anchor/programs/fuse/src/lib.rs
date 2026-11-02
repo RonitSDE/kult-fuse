@@ -51,6 +51,7 @@ pub mod kult_fuse {
         f.pending_execution_nonce = 0;
         f.pending_target_exposure_usd = 0;
         f.last_update_slot = clock.slot;
+        f.last_observed_ts = 0;
         f.last_receipt_hash = ZERO_HASH;
         f.last_reason_code = ReasonCode::Noop as u8;
         f.position_ref = ZERO_HASH;
@@ -95,6 +96,7 @@ pub mod kult_fuse {
         f.last_mark_price = mark_price;
         f.oracle_sequence = oracle_sequence;
         f.last_update_slot = clock.slot;
+        f.last_observed_ts = observed_ts;
         emit!(ObservationAccepted { fuse: f.key(), p_bps, mark_price, oracle_sequence });
         Ok(())
     }
@@ -109,6 +111,13 @@ pub mod kult_fuse {
         require!(target_exposure_usd.unsigned_abs() <= f.risk_cap_usd, FuseError::RiskCapExceeded);
 
         let now = Clock::get()?.unix_timestamp;
+        // A previously valid observation is not a standing authorization to add risk forever.
+        // Reductions and closes remain possible during feed outages.
+        if target_exposure_usd.unsigned_abs() > f.filled_exposure_usd.unsigned_abs() {
+            require!(f.last_observed_ts > 0, FuseError::StaleOracle);
+            let age = now.saturating_sub(f.last_observed_ts);
+            require!(age <= f.max_oracle_age_sec as i64, FuseError::StaleOracle);
+        }
         if f.status == FuseStatus::Killed {
             require!(target_exposure_usd == 0, FuseError::KilledCanOnlyClose);
         } else if f.last_probability_bps < f.kill_probability_bps {
@@ -171,7 +180,9 @@ pub mod kult_fuse {
 
     pub fn record_fill(ctx: Context<ExecutionFuse>, filled_exposure_usd: i64, position_ref: [u8; 32], receipt_hash: [u8; 32], execution_nonce: u64, reason_code: u8) -> Result<()> {
         let f = &mut ctx.accounts.fuse;
-        require!(execution_nonce == f.pending_execution_nonce || (f.pending_execution_nonce == 0 && execution_nonce == f.execution_nonce), FuseError::ExecutionNonceMismatch);
+        // One committed target authorizes one reported fill. Do not allow the
+        // execution key to rewrite the receipt head after a pending fill clears.
+        require!(f.pending_execution_nonce != 0 && execution_nonce == f.pending_execution_nonce, FuseError::ExecutionNonceMismatch);
         if f.status == FuseStatus::Killed {
             require!(is_risk_reducing(f.filled_exposure_usd, filled_exposure_usd), FuseError::KilledCanOnlyClose);
         }
@@ -405,6 +416,7 @@ pub struct FuseAccount {
     pub pending_execution_nonce: u64,
     pub pending_target_exposure_usd: i64,
     pub last_update_slot: u64,
+    pub last_observed_ts: i64,
     pub last_receipt_hash: [u8; 32],
     pub last_reason_code: u8,
     pub bump: u8,

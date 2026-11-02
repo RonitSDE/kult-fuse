@@ -1,0 +1,61 @@
+# Render web service. A persistent disk is required: the Fuse binding and
+# receipt log live in DATA_DIR, and a wiped disk must not start a second mandate
+# on top of an open venue position. Disks are paid-instance only (starter or above).
+# Free instances also sleep, which stops the live worker.
+services:
+  - type: web
+    name: kult-fuse
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    disk:
+      name: fuse-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22.14.0"
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: EVENT_SOURCE
+        value: polymarket
+      - key: PERP_ADAPTER
+        value: drift
+      - key: DRIFT_ENV
+        value: devnet
+      - key: SOLANA_CLUSTER
+        value: devnet
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: FUSE_PROGRAM_ID
+        sync: false
+      - key: FUSE_IDL_PATH
+        value: ./deploy/idl/kult_fuse.json
+      - key: POLICY_FILE
+        value: ./policy.example.json
+      - key: BUILD_TAG
+        value: fuse-order-v1.4
+      - key: AUTO_WORKER
+        value: "0"
+      - key: FUSE_ADMIN_TOKEN
+        generateValue: true
+      - key: BUILD_SHA
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: POLYMARKET_MARKET
+        sync: false
+      - key: DRIFT_RPC_URL
+        sync: false
+      - key: DRIFT_PRIVATE_KEY_JSON
+        sync: false
+      - key: FUSE_OWNER_PRIVATE_KEY_JSON
+        sync: false
+      - key: FUSE_EXECUTION_PRIVATE_KEY_JSON
+        sync: false
+      - key: FUSE_ORACLE_PRIVATE_KEY_JSON
+        sync: false
