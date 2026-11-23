@@ -171,3 +171,17 @@ test('unknown venue P&L halts new risk with an active loss stop', async()=>{
   await x.engine.kill();
   assert.equal(x.fuse.status,'KILLED');
 });
+
+test('v2.1.1: limiter can admit several operations at once within the budget', () => {
+  const l = createVerifyLimiter({ maxPerMinute: 10, maxConcurrent: 3, clock: () => 0 });
+  assert.equal(l.acquire(), true); assert.equal(l.acquire(), true); assert.equal(l.acquire(), true);
+  assert.equal(l.acquire(), false, 'fourth concurrent refused');
+  for (let i = 0; i < 6; i += 1) l.release();
+  assert.equal(l.acquire(), true, 'extra releases never open more than maxConcurrent slots');
+  assert.equal(l.acquire(), true); assert.equal(l.acquire(), true);
+  assert.equal(l.acquire(), false);
+  let t = 0; const budget = createVerifyLimiter({ maxPerMinute: 4, maxConcurrent: 10, clock: () => t });
+  for (let i = 0; i < 4; i += 1) { assert.equal(budget.acquire(), true); budget.release(); }
+  assert.equal(budget.acquire(), false, 'per-minute budget still applies');
+  t = 60_000; assert.equal(budget.acquire(), true);
+});

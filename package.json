@@ -1,9 +1,9 @@
 {
   "name": "kult-fuse",
-  "version": "1.10.0",
+  "version": "2.1.1",
   "private": true,
   "type": "module",
-  "description": "KULT Fuse: Solana agent mandates with DFlow signal, Velocity execution, Kalshi read-only market context and evidence-labeled decision journal.",
+  "description": "KULT Fuse PREDICT-first sponsor edition: real Solana pm-AMM swaps and liquidity, app-side risk mandates, verified-onchain scoreboards. Legacy perps lab remains isolated.",
   "engines": {
     "node": "24.x"
   },
@@ -23,7 +23,17 @@
     "submission:check": "node --env-file-if-exists=.env scripts/submission-check.mjs",
     "manifest:source": "node scripts/source-manifest.mjs",
     "anchor:init": "node --env-file-if-exists=.env scripts/init-anchor.mjs",
-    "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs"
+    "anchor:local-test": "node --env-file-if-exists=.env scripts/anchor-local-test.mjs",
+    "predict:install": "npm --prefix apps/predict ci --no-audit --no-fund",
+    "predict:dev": "npm --prefix apps/predict run dev",
+    "predict:build": "node --env-file-if-exists=.env apps/predict/node_modules/vite/bin/vite.js build apps/predict",
+    "predict:check": "npm --prefix apps/predict run check",
+    "predict:market:create": "node --env-file-if-exists=.env apps/predict/scripts/create-market.cjs",
+    "predict:market:resolve": "node --env-file-if-exists=.env apps/predict/scripts/resolve-market.cjs",
+    "predict:vault:create": "node --env-file-if-exists=.env apps/predict/scripts/create-vault.cjs",
+    "predict:vault:launch": "node --env-file-if-exists=.env apps/predict/scripts/launch-vault.cjs",
+    "predict:preflight": "node --env-file-if-exists=.env scripts/predict-preflight.mjs",
+    "predict:submission": "node --env-file-if-exists=.env scripts/predict-submission-check.mjs"
   },
   "dependencies": {
     "@anchor-lang/core": "1.0.1",

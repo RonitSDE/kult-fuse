@@ -3,10 +3,18 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        VITE_DEVNET_RPC: ${VITE_DEVNET_RPC:-https://api.devnet.solana.com}
+        VITE_FEATURED_MARKETS: ${VITE_FEATURED_MARKETS:-}
+        VITE_FEATURED_VAULTS: ${VITE_FEATURED_VAULTS:-}
     ports:
       - "8787:8787"
     env_file:
       - ../.env
+    environment:
+      DATA_DIR: /app/.data
+      PREDICT_RECEIPTS_FILE: /app/.data/predict-receipts.json
+      PREDICT_LIFECYCLE_FILE: /app/.data/predict-proofs.json
     volumes:
       - fuse-data:/app/.data
     restart: unless-stopped

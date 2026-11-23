@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {normalizeVault,vaultStatus,vaultOdds} from '../src/predict/vault.mjs';
+const now=Math.floor(Date.now()/1000);
+const make=(extra={})=>({publicKey:{toString:()=> 'VaUlT11111111111111111111111111111111111111'},account:{name:new TextEncoder().encode('Does KULT Fuse ship?'),vaultId:7,commitEndTs:now+600,marketEndTs:now+3600,yesTotal:20_000_000n,noTotal:10_000_000n,minTotal:50_000_000n,commitCount:2,launched:false,...extra}});
+test('onchain vault 6-decimal amounts remain in human mUSDC display units',()=>{const v=normalizeVault(make());assert.equal(v.yesTotal,20);assert.equal(v.noTotal,10);assert.equal(v.minTotal,50);assert.equal(v.commitCount,2);assert.equal(v.name,'Does KULT Fuse ship?')});
+test('open vault accepts pre-window commitments',()=>assert.equal(vaultStatus(normalizeVault(make()),now).canCommit,true));
+test('vault refuses new commitments at commit expiry',()=>assert.equal(vaultStatus(normalizeVault(make({commitEndTs:now})),now).canCommit,false));
+test('vault refuses new commitments after launch',()=>assert.equal(vaultStatus(normalizeVault(make({launched:true})),now).canCommit,false));
+test('vault refuses invalid zero minimum',()=>assert.equal(vaultStatus(normalizeVault(make({minTotal:0n})),now).canCommit,false));
+test('crowd-share display uses committed YES/NO totals, not an executed quote',()=>{const x=vaultOdds(normalizeVault(make()));assert.ok(Math.abs(x.yesPct-66.666666)<1e-4);assert.ok(Math.abs(x.noPct-33.333333)<1e-4)});
+test('empty vault has no implied probability',()=>assert.equal(vaultOdds(normalizeVault(make({yesTotal:0n,noTotal:0n}))),null));

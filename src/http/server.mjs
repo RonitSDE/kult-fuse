@@ -4,12 +4,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Runtime } from './runtime.mjs';
+import { handlePredictApi, startPredictReconciler } from '../predict/api.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
 const webRoot = path.join(root, 'web');
+const predictWebRoot = path.join(root,'apps/predict/dist');
 const port = Number(process.env.PORT || 8787);
-const VERSION = '1.10.0';
+const VERSION = '2.1.1';
 const runtime = await new Runtime(process.env).start();
 if (!runtime.live) console.warn(`setup mode: ${runtime.setupError}`);
 
@@ -84,24 +86,44 @@ async function api(req, res, url) {
 
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 
-const server = http.createServer(async (req, res) => {
+const predictConnectOrigins = new Set(['https://api.devnet.solana.com','https://pm-amm-devnet.vercel.app']);
+for(const raw of [process.env.VITE_DEVNET_RPC]){
+ if(!raw)continue;
+ const parsed=new URL(raw);
+ if(parsed.protocol!=='https:' || /mainnet/i.test(parsed.hostname))throw Error('Only HTTPS devnet RPC permitted by PREDICT CSP');
+ predictConnectOrigins.add(parsed.origin);
+}
+// web3.js confirms transactions over a websocket to the same RPC host, so allow wss:// for each RPC.
+const predictWsOrigins = [...predictConnectOrigins].filter((o) => !o.includes('pm-amm-devnet.vercel.app')).map((o) => o.replace(/^https:/, 'wss:'));
+const predictCsp = `default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self' ${[...predictConnectOrigins, ...predictWsOrigins].join(' ')}`;
+const perpsCsp = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'";
+const server = http.createServer({ requestTimeout: 15000, headersTimeout: 10000, connectionsCheckingInterval: 3000 }, async (req, res) => {
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('x-frame-options', 'DENY');
   res.setHeader('referrer-policy', 'no-referrer');
-  res.setHeader('content-security-policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'");
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  res.setHeader('content-security-policy', req.url?.startsWith('/perps') ? perpsCsp : predictCsp);
+  let url;
+  try { url = new URL(req.url, 'http://localhost'); }
+  catch { return json(res, 400, { error: 'Invalid request URL' }); }
+  // The perps lab lives under /perps/ and calls relative `api/...` and `healthz` paths.
+  if (url.pathname === '/perps') { res.writeHead(301, { location: `/perps/${url.search}` }); return res.end(); }
+  if (url.pathname.startsWith('/perps/api/') || url.pathname === '/perps/healthz') url.pathname = url.pathname.slice('/perps'.length);
   if (url.pathname === '/healthz') {
     const i = runtime.integrity();
     return json(res, 200, { status: runtime.live ? 'ok' : 'setup', service: 'kult-fuse', version: VERSION, network: i.network, market: runtime.market?.id || null, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quoteView(), quoteError: runtime.quoteError || null, time: new Date().toISOString() });
   }
+  if (await handlePredictApi(req,res,url)) return;
   if (url.pathname.startsWith('/api/')) return api(req, res, url);
-  let rel = url.pathname === '/' ? '/index.html' : url.pathname;
-  rel = path.normalize(rel).replace(/^\.\.(\/|\\)/g, '');
-  const file = path.join(webRoot, rel);
-  if (!file.startsWith(webRoot)) { res.writeHead(403); return res.end('Forbidden'); }
+  const legacy = url.pathname === '/perps' || url.pathname.startsWith('/perps/');
+  const targetRoot = legacy ? webRoot : predictWebRoot;
+  let rel = legacy ? url.pathname.slice('/perps'.length) : url.pathname;
+  rel = rel === '/' || rel === '' ? '/index.html' : rel;
+  if (!path.extname(rel)) rel='/index.html'; // SPA deep links
+  const file = path.resolve(targetRoot, '.'+rel);
+  if (!file.startsWith(targetRoot + path.sep)) {res.writeHead(403);return res.end('Forbidden');}
   try {
     const data = await fs.readFile(file);
-    const immutable = rel.startsWith('/fonts/');
+    const immutable = rel.startsWith('/assets/') || rel.startsWith('/fonts/');
     res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-store' });
     res.end(data);
   } catch {
@@ -110,6 +132,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+startPredictReconciler();
 server.listen(port, '0.0.0.0', () => {
   console.log(`KULT Fuse running on http://localhost:${port}`);
   console.log(`mode=${runtime.mode} market=${runtime.market?.kind || '-'}:${runtime.market?.id || '-'} perp=${runtime.venueKind()} fuse=${runtime.activeFusePda()}`);

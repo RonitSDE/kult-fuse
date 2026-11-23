@@ -1,3 +1,11 @@
+> **PREDICT Devnet release v2.1.0** — Follow [the developer handoff](docs/PREDICT_V2_WINNING_HANDOFF.md) for the public arena. The original perps lab is documented below.
+
+# KULT Fuse v2.0 — PREDICT-first Prediction Arena
+
+**PRIMARY RELEASE:** [PREDICT v2.0 sponsor-first developer handoff](docs/PREDICT_V2_WINNING_HANDOFF.md). Public homepage now uses real PREDICT pm-AMM, not just DFlow signals. Build `apps/predict`, then run root server. The older perp journey is available under `/perps/`.
+
+---
+
 # KULT Fuse v1.10.0 · guardrails for AI trading agents
 
 **The agent proposes. The mandate decides. Every fill is checked against Solana.**

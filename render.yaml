@@ -7,9 +7,9 @@ services:
     name: kult-fuse
     runtime: node
     plan: starter
-    buildCommand: npm ci
+    buildCommand: npm ci && npm --prefix apps/predict ci --no-audit --no-fund && npm --prefix apps/predict run check && npm --prefix apps/predict run build
     startCommand: npm start
-    healthCheckPath: /healthz
+    healthCheckPath: /api/predict/config
     disk:
       name: fuse-data
       mountPath: /var/data
@@ -21,6 +21,20 @@ services:
         value: production
       - key: DATA_DIR
         value: /var/data
+      - key: PREDICT_RECEIPTS_FILE
+        value: /var/data/predict-receipts.json
+      - key: PREDICT_ATTESTATION_KEY   # set by hand: openssl rand -hex 32 (Render's generateValue is not hex)
+        sync: false
+      - key: PREDICT_LIFECYCLE_FILE
+        value: /var/data/predict-proofs.json
+      - key: PREDICT_DEVNET_RPC
+        sync: false
+      - key: VITE_DEVNET_RPC
+        sync: false
+      - key: VITE_FEATURED_MARKETS
+        sync: false
+      - key: VITE_FEATURED_VAULTS
+        sync: false
       - key: EVENT_SOURCE
         value: dflow
       - key: PERP_ADAPTER
@@ -38,7 +52,7 @@ services:
       - key: POLICY_FILE
         value: ./policy.example.json
       - key: BUILD_TAG
-        value: fuse-v1.10.0
+        value: fuse-v2.1.1-predict
       - key: AUTO_WORKER
         value: "0"
       - key: FUSE_ADMIN_TOKEN

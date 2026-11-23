@@ -1,0 +1,11 @@
+{
+  "vaultPda": null,
+  "marketPda": null,
+  "createVault": null,
+  "commitments": [],
+  "launch": null,
+  "swaps": [],
+  "resolution": null,
+  "resolutionEvidenceUrl": null,
+  "claim": null
+}
