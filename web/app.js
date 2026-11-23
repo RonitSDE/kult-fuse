@@ -677,3 +677,21 @@ setInterval(() => { if (!document.hidden) loadProof(); }, 30000);
 
 setInterval(()=>{if(!document.hidden) loadMarketContext();},60000);
 setInterval(()=>{if(!document.hidden) loadJournal();},10000);
+
+// UI polish: header elevation on scroll and staggered section reveal. Purely presentational.
+(() => {
+  const top = document.getElementById('topWrap');
+  if (top) {
+    const onScroll = () => { top.dataset.scrolled = String(window.scrollY > 8); };
+    addEventListener('scroll', onScroll, { passive: true }); onScroll();
+  }
+  if (!('IntersectionObserver' in window) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const targets = [...document.querySelectorAll('main > section:not(.intro):not(.hero), main > .columns')];
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+  }, { threshold: 0 });
+  targets.forEach((el, i) => {
+    if (el.getBoundingClientRect().top < innerHeight) return; // already on screen: show immediately
+    el.classList.add('reveal'); el.style.transitionDelay = `${Math.min(i, 3) * 40}ms`; io.observe(el);
+  });
+})();

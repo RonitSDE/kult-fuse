@@ -5,16 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KULT Fuse · guardrails for AI trading agents</title>
   <meta name="description" content="A prediction-market signal proposes perp exposure. A mandate committed on Solana decides how much is allowed. Every fill is checked against the chain.">
+  <meta name="theme-color" content="#eceeea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e1114" media="(prefers-color-scheme: dark)">
+  <meta property="og:title" content="KULT Fuse · guardrails for AI trading agents">
+  <meta property="og:description" content="Your agent can suggest a trade. It cannot change your mandate. Policy committed on Solana, every fill checked against the chain.">
+  <meta property="og:type" content="website">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <div id="banner" class="banner hidden" role="status">
     <span id="bannerText">Can't reach the Fuse server. Showing the last state received.</span>
     <button id="retry" class="link-btn" type="button">Retry</button>
   </div>
 
+  <div class="top-wrap" id="topWrap">
   <header class="top">
     <a class="brand" href="./" aria-label="KULT Fuse home">
       <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="3" y="11" width="26" height="10" rx="5"/><path d="M8 16h4l2-3 4 6 2-3h4"/></svg>
@@ -26,8 +33,9 @@
       <button id="operatorBtn" class="ghost-btn" type="button">Operator sign-in</button>
     </div>
   </header>
+  </div>
 
-  <main>
+  <main id="main" tabindex="-1">
     <section class="intro" aria-labelledby="introTitle">
       <div class="intro-copy">
         <p class="eyebrow">SOLANA · AGENT RISK CONTROLS</p>
