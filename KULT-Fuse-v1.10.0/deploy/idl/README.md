@@ -1,1 +1,0 @@
-The deployer must generate kult_fuse.json with Anchor 0.31 from this source, verify it matches the deployed v1.3 program, and commit it to the release. This directory intentionally contains no uncompiled or obsolete IDL.
