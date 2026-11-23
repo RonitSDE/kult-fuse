@@ -5,7 +5,7 @@
   "type": "module",
   "description": "KULT Fuse: Solana agent mandates with DFlow signal, Velocity execution, Kalshi read-only market context and evidence-labeled decision journal.",
   "engines": {
-    "node": ">=24"
+    "node": "24.x"
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/http/server.mjs",

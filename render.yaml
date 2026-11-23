@@ -38,7 +38,7 @@ services:
       - key: POLICY_FILE
         value: ./policy.example.json
       - key: BUILD_TAG
-        value: fuse-v1.9.1
+        value: fuse-v1.10.0
       - key: AUTO_WORKER
         value: "0"
       - key: FUSE_ADMIN_TOKEN
