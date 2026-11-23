@@ -1,6 +1,6 @@
 import { rawTargetForProbability } from './policy.mjs';
 
-export function makeProbabilityMark({ bid, ask, bidDepthUsd = null, askDepthUsd = null, observedAtMs = Date.now(), sequence = 0, source = 'unknown' }, policy, nowMs = Date.now()) {
+export function makeProbabilityMark({ bid, ask, bidDepthUsd = null, askDepthUsd = null, observedAtMs = Date.now(), sequence = 0, freshnessProven = true, source = 'unknown' }, policy, nowMs = Date.now()) {
   const b = Number(bid);
   const a = Number(ask);
   if (!Number.isFinite(b) || !Number.isFinite(a)) throw new Error('bid/ask required');
@@ -10,12 +10,16 @@ export function makeProbabilityMark({ bid, ask, bidDepthUsd = null, askDepthUsd 
   const spread = a - b;
   const midpoint = Math.max(p, 0.0001);
   const spreadBps = Math.round((spread / midpoint) * 10000);
-  const ageSec = Math.max(0, (nowMs - observedAtMs) / 1000);
+  const timeValid = Number.isFinite(observedAtMs) && observedAtMs > 0;
+  const future = timeValid && observedAtMs > nowMs + 2000;
+  const ageSec = timeValid ? Math.max(0, (nowMs - observedAtMs) / 1000) : Infinity;
   const pBps = Math.round(p * 10000);
   // Top-of-book depth is optional: sources that do not report it are judged on age and spread only.
   const depthUsd = bidDepthUsd == null || askDepthUsd == null ? null : Math.min(Number(bidDepthUsd), Number(askDepthUsd));
   const minDepth = Number(policy.minTopDepthUsd || 0);
-  const qualityReason = ageSec > policy.maxOracleAgeSec ? 'STALE'
+  const qualityReason = freshnessProven === false || !timeValid ? 'UNVERIFIED'
+    : future ? 'FUTURE'
+    : ageSec > policy.maxOracleAgeSec ? 'STALE'
     : spreadBps > policy.maxSpreadBps ? 'WIDE'
     : minDepth > 0 && (depthUsd == null || depthUsd < minDepth) ? 'THIN'
     : 'OK';
@@ -42,6 +46,8 @@ export function explainSignal(mark, policy, currentTargetUsd = 0) {
   const age = `${mark.ageSec.toFixed(0)}s old (max ${policy.maxOracleAgeSec}s)`;
   const spread = `spread ${mark.spreadBps} bps (max ${policy.maxSpreadBps})`;
   const hold = `No increase: permitted exposure stays at most $${currentTargetUsd}.`;
+  if (mark.qualityReason === 'UNVERIFIED') return `Source does not provide a distinct, timestamped book update. ${hold}`;
+  if (mark.qualityReason === 'FUTURE') return `Quote timestamp is ahead of the local clock. ${hold}`;
   if (mark.qualityReason === 'STALE') return `Quote is ${age}. ${hold}`;
   if (mark.qualityReason === 'WIDE') return `Quote ${spread} is too wide to trust. ${hold}`;
   if (mark.qualityReason === 'THIN') return `Top of book ${mark.depthUsd == null ? 'depth is unavailable' : `holds $${mark.depthUsd.toFixed(0)}`} (min $${policy.minTopDepthUsd}). ${hold}`;

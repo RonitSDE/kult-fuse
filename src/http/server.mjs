@@ -9,7 +9,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '../..');
 const webRoot = path.join(root, 'web');
 const port = Number(process.env.PORT || 8787);
-const runtime = await new Runtime(process.env).init();
+const VERSION = '1.10.0';
+const runtime = await new Runtime(process.env).start();
+if (!runtime.live) console.warn(`setup mode: ${runtime.setupError}`);
 
 function json(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -24,29 +26,63 @@ function authorized(req) {
   return given.length === want.length && crypto.timingSafeEqual(given, want);
 }
 
-// Read-only actions anyone may call; everything else moves money or chain state.
+// Public verification is globally rate-limited rather than relying on spoofable
+// X-Forwarded-For headers; operators can request signed policy previews.
+import { createVerifyLimiter } from './verify-limiter.mjs';
+const verifyLimiter = createVerifyLimiter();
+const agentCheckLimiter = createVerifyLimiter({ maxPerMinute: 240 });
 const PUBLIC_POSTS = new Set(['/api/verify']);
+
+async function readSmallJson(req, maxBytes = 4096) {
+  let size = 0; const chunks = [];
+  for await (const part of req) {
+    size += part.length;
+    if (size > maxBytes) throw new Error('request body too large');
+    chunks.push(part);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+}
 
 async function api(req, res, url) {
   try {
     if (req.method === 'POST' && !PUBLIC_POSTS.has(url.pathname) && !authorized(req)) return json(res, 401, { error: 'operator token required' });
+    if (!runtime.live && !['/api/state', '/api/proof', '/api/auth', '/api/agent/check'].includes(url.pathname)) {
+      return json(res, 503, { error: 'Fuse is in setup mode: nothing can execute until the live runtime starts', setup: runtime.setupError });
+    }
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await runtime.getState());
-    if (req.method === 'GET' && url.pathname === '/api/decisions') return json(res, 200, { fuseId: runtime.engine.fuse.id, evidence: 'WORKER_LOG_ONLY', decisions: runtime.decisions || [] });
+    if (req.method === 'GET' && url.pathname === '/api/decisions') return json(res, 200, { fuseId: runtime.engine?.fuse?.id, evidence: 'WORKER_LOG_ONLY', decisions: runtime.decisions || [] });
     if (req.method === 'GET' && url.pathname === '/api/proof') return json(res, 200, await runtime.proof());
+    if (req.method === 'GET' && url.pathname === '/api/market/context') return json(res, 200, await runtime.marketContext());
+    if (req.method === 'GET' && url.pathname === '/api/journal') return json(res, 200, runtime.publicJournal());
     if (req.method === 'POST' && url.pathname === '/api/arm') return json(res, 200, await runtime.arm());
     if (req.method === 'POST' && url.pathname === '/api/kill') return json(res, 200, await runtime.kill());
     if (req.method === 'POST' && url.pathname === '/api/settle') return json(res, 200, await runtime.settle());
     if (req.method === 'POST' && url.pathname === '/api/fuse/new') return json(res, 200, await runtime.newMandate());
     if (req.method === 'POST' && url.pathname === '/api/auth') return json(res, 200, { ok: true });
     if (req.method === 'POST' && url.pathname === '/api/tick') return json(res, 200, await runtime.tick());
-    if (req.method === 'POST' && url.pathname === '/api/verify') return json(res, 200, await runtime.verify());
+    if (req.method === 'GET' && url.pathname === '/api/agent/check') {
+      if (!agentCheckLimiter.acquire()) return json(res, 429, { error: 'too many checks; retry in a minute' });
+      try {
+        const raw = url.searchParams.get('targetUsd');
+        const targetUsd = raw == null || raw.trim() === '' ? NaN : Number(raw);
+        return json(res, 200, runtime.publicAgentCheck(targetUsd));
+      } finally { agentCheckLimiter.release(); }
+    }
+    if (req.method === 'POST' && url.pathname === '/api/agent/proposal') {
+      return json(res, 200, runtime.previewAgentProposal(await readSmallJson(req)));
+    }
+    if (req.method === 'POST' && url.pathname === '/api/verify') {
+      if (!verifyLimiter.acquire()) return json(res, 429, { error: 'verification rate or concurrency limit reached; retry later' });
+      try { return json(res, 200, await runtime.verify()); }
+      finally { verifyLimiter.release(); }
+    }
     return json(res, 404, { error: 'not found' });
   } catch (error) {
-    return json(res, 400, { error: error.message, stack: process.env.NODE_ENV === 'production' ? undefined : error.stack });
+    return json(res, 400, { error: error.message });
   }
 }
 
-const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 
 const server = http.createServer(async (req, res) => {
   res.setHeader('x-content-type-options', 'nosniff');
@@ -56,7 +92,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname === '/healthz') {
     const i = runtime.integrity();
-    return json(res, 200, { status: 'ok', service: 'kult-fuse', version: '1.6.0', network: i.network, market: runtime.market?.id, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quoteView(), quoteError: runtime.quoteError || null, time: new Date().toISOString() });
+    return json(res, 200, { status: runtime.live ? 'ok' : 'setup', service: 'kult-fuse', version: VERSION, network: i.network, market: runtime.market?.id || null, question: runtime.market?.question || null, onchain: i.onchain, programId: i.programId, perpAdapter: i.perpAdapter, eventSource: i.eventSource, buildTag: i.buildTag, buildSha: i.buildSha, quote: runtime.quoteView(), quoteError: runtime.quoteError || null, time: new Date().toISOString() });
   }
   if (url.pathname.startsWith('/api/')) return api(req, res, url);
   let rel = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -65,7 +101,8 @@ const server = http.createServer(async (req, res) => {
   if (!file.startsWith(webRoot)) { res.writeHead(403); return res.end('Forbidden'); }
   try {
     const data = await fs.readFile(file);
-    res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
+    const immutable = rel.startsWith('/fonts/');
+    res.writeHead(200, { 'content-type': mime[path.extname(file)] || 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-store' });
     res.end(data);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain' });
@@ -75,9 +112,19 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`KULT Fuse running on http://localhost:${port}`);
-  console.log(`market=${runtime.market.kind}:${runtime.market.id} perp=${process.env.PERP_ADAPTER || 'drift'} fuse=${runtime.activeFusePda()}`);
+  console.log(`mode=${runtime.mode} market=${runtime.market?.kind || '-'}:${runtime.market?.id || '-'} perp=${runtime.venueKind()} fuse=${runtime.activeFusePda()}`);
   runtime.startQuoteWatch();
 });
+
+// Setup mode retries the live start, so a deployment goes live once its config or RPC recovers.
+const retrySec = Number(process.env.SETUP_RETRY_SEC ?? 120);
+if (!runtime.live && retrySec > 0) {
+  const timer = setInterval(async () => {
+    await runtime.start();
+    if (runtime.live) { clearInterval(timer); console.log('runtime is live'); }
+  }, retrySec * 1000);
+  timer.unref();
+}
 
 // The live worker polls the market and reconciles the position; disable only for maintenance.
 if (String(process.env.AUTO_WORKER || '0') === '1') {
@@ -85,6 +132,7 @@ if (String(process.env.AUTO_WORKER || '0') === '1') {
   console.log(`auto worker enabled: ${ms}ms`);
   setInterval(async () => {
     try {
+      if (!runtime.live) return;
       const status = runtime.engine.fuse.status;
       if (['ARMED','OPEN','REDUCING','KILLED'].includes(status)) await runtime.tick();
     } catch (e) { console.error('auto worker tick failed:', e.message); }

@@ -117,17 +117,33 @@ export class FuseEngine {
       const pnl = actual.unrealizedPnlUsd == null ? null : Number(actual.unrealizedPnlUsd);
       this.fuse.lastPnlUsd = pnl;
       if (lossStopHit(this.fuse.policy, pnl)) return await this.triggerLossStop(actual, pnl);
+      // With a loss stop configured, missing venue P&L blocks increases only. A probability
+      // kill or a step down must still go through (v1.8 skipped the whole tick here).
+      const pnlUnavailable = this.fuse.policy.lossStopUsd > 0 && !Number.isFinite(pnl);
 
       const raw = rawObservation || await this.eventSource.read();
-      if (raw.sequence <= this.fuse.oracleSequence) throw new Error('oracle replay rejected');
+      // A metadata-only/fallback quote may be displayed but must never increase risk.
+      // Lack of a source sequence cannot become an artificial sequence via polling.
+      // An unchanged source sequence is the same observation: hold, record nothing on-chain.
+      // (v1.8 threw here, so every poll of a quiet book became a worker error.)
+      if (raw.freshnessProven !== false) {
+        const holdReason = !Number.isSafeInteger(raw.sequence) ? Reason.ORACLE_UNVERIFIED
+          : raw.sequence === this.fuse.oracleSequence ? Reason.ORACLE_UNCHANGED
+          : raw.sequence < this.fuse.oracleSequence ? Reason.ORACLE_REPLAY : null;
+        if (holdReason) {
+          this.fuse.lastReasonCode = holdReason;
+          await this.persist(this.fuse);
+          return { skipped: true, reason: holdReason, ...this.snapshot(), position: actual };
+        }
+      }
       const mark = makeProbabilityMark(raw, this.fuse.policy);
-      this.fuse.oracleSequence = raw.sequence;
+      if (raw.freshnessProven !== false) this.fuse.oracleSequence = raw.sequence;
       this.fuse.lastProbabilityBps = mark.pBps;
       this.fuse.lastSignal = { bid: mark.bid, ask: mark.ask, spreadBps: mark.spreadBps, ageSec: mark.ageSec, depthUsd: mark.depthUsd, observedAtMs: mark.observedAtMs, quality: mark.quality, qualityReason: mark.qualityReason, source: mark.source, explain: explainSignal(mark, this.fuse.policy, this.fuse.desiredExposureUsd) };
       this.fuse.updatedAt = Date.now();
 
       if (!mark.quality) {
-        this.fuse.lastReasonCode = { STALE: Reason.ORACLE_STALE, WIDE: Reason.ORACLE_WIDE, THIN: Reason.ORACLE_THIN }[mark.qualityReason];
+        this.fuse.lastReasonCode = { STALE: Reason.ORACLE_STALE, WIDE: Reason.ORACLE_WIDE, THIN: Reason.ORACLE_THIN, UNVERIFIED: Reason.ORACLE_UNVERIFIED, FUTURE: Reason.ORACLE_FUTURE }[mark.qualityReason];
         await this.persist(this.fuse);
         return { skipped: true, reason: this.fuse.lastReasonCode, mark, ...this.snapshot() };
       }
@@ -148,6 +164,11 @@ export class FuseEngine {
       const risk = evaluateRisk({ fuse: this.fuse, proposedTargetUsd: proposed, unrealizedPnlUsd: pnl });
       proposed = risk.kill ? 0 : risk.targetUsd;
       const killing = curve.killed || risk.kill;
+      if (!killing && pnlUnavailable && proposed > this.fuse.desiredExposureUsd) {
+        this.fuse.lastReasonCode = Reason.VENUE_PNL_UNAVAILABLE;
+        await this.persist(this.fuse);
+        return { skipped: true, reason: Reason.VENUE_PNL_UNAVAILABLE, mark, ...this.snapshot(), position: actual };
+      }
 
       // Unchanged target: nothing new to commit onchain; only keep the venue reconciled.
       if (!killing && proposed === this.fuse.desiredExposureUsd) {
@@ -240,6 +261,11 @@ export class FuseEngine {
       this.fuse.pendingExecutionNonce = nonce;
       this.fuse.pendingTargetExposureUsd = desired;
       await this.persist(this.fuse);
+    }
+    // Operational leverage check: performed immediately before any risk increase,
+    // including crash recovery and reconciliation. It is not an onchain limit.
+    if (desired > Number(before.exposureUsd || 0) + 0.01 && this.perp.assertRiskIncrease) {
+      await this.perp.assertRiskIncrease({ desiredExposureUsd: desired, policy: this.fuse.policy, position: before });
     }
     const clientOrderId = `${this.fuse.id}:${nonce}:${desired}`;
     const exec = await this.perp.executeTarget(desired, { clientOrderId, reduceOnly: this.fuse.status === FuseStatus.KILLED || Math.abs(desired) < Math.abs(before.exposureUsd || 0) });

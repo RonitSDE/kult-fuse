@@ -26,7 +26,7 @@ test('proof links use current mandate transactions and position receipts', () =>
 
 test('no receipts means no venue proof even when old pinned env values exist', () => {
   const txs = proofTransactions({
-    env: { PROOF_FLASH_CLOSE_TX: sig('pinnedclose') },
+    env: { PROOF_VENUE_CLOSE_TX: sig('pinnedclose') },
     receipts: [{ reason: 'KILL_PROBABILITY', txSignature: null }]
   });
   assert.equal(txs.venueClose, null);

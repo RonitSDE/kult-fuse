@@ -12,6 +12,11 @@ import { makeProbabilityMark, explainSignal } from '../core/probability.mjs';
 import { AnchorFuseClient } from '../adapters/store/anchor-fuse-client.mjs';
 import { fuseFillEvidence } from '../adapters/store/fuse-evidence.mjs';
 import { makeDecision, retainDecisions } from '../core/decision.mjs';
+import { rawTargetForProbability } from '../core/policy.mjs';
+import { setupChecklist } from './setup.mjs';
+import { evaluateAgentProposal } from '../core/agent-proposal.mjs';
+import { KalshiPublicObserver } from '../adapters/event/kalshi-observer.mjs';
+import { buildDecisionJournal } from '../core/decision-journal.mjs';
 
 const TERMINAL = ['KILLED', 'SETTLED'];
 
@@ -41,6 +46,10 @@ export class Runtime {
     this.store = new FileStore(env.DATA_DIR || './.data');
     this.quote = null;
     this.quoteError = null;
+    this.kalshiObserver = new KalshiPublicObserver({
+      enabled: String(env.KALSHI_OBSERVER_ENABLED ?? '1') === '1',
+      environment: env.KALSHI_OBSERVER_ENV === 'demo' ? 'demo' : 'production'
+    });
     this.mutationQueue = Promise.resolve();
   }
 
@@ -53,14 +62,13 @@ export class Runtime {
   }
 
   async init() {
-    if ((this.env.PERP_ADAPTER || 'drift').toLowerCase() === 'drift' && (this.env.DRIFT_ENV || 'devnet') !== (this.env.SOLANA_CLUSTER || 'devnet')) {
-      throw new Error('live Fuse and Drift must be on the same Solana cluster; the scripted proof runner is separate');
+    const venueEnv = this.env.VELOCITY_ENV || this.env.SOLANA_CLUSTER || 'devnet';
+    if (this.venueKind() === 'velocity' && venueEnv !== (this.env.SOLANA_CLUSTER || 'devnet')) {
+      throw new Error('live Fuse and Velocity must be on the same Solana cluster; the scripted proof runner is separate');
     }
     await this.store.init();
     this.receipts = await this.store.read('receipts', []);
-    this.eventSource = this.makeEventSource();
-    this.market = await this.eventSource.init();
-    this.basePolicy = JSON.parse(await fs.readFile(this.env.POLICY_FILE || './policy.example.json', 'utf8'));
+    await this.loadSignal();
     this.perp = await makePerpAdapter(this.env);
     this.chain = await this.store.read('chain', null);
     this.chainHooks = await this.makeChainHooks();
@@ -84,11 +92,55 @@ export class Runtime {
     this.bindEngine(fuse);
     this.decisions = (await this.store.read('decisions', [])).filter((item) => item.fuseId === fuse.id).slice(-60);
     await this.persist(fuse);
+    this.mode = 'live';
     return this;
   }
 
+  venueKind() { return (this.env.PERP_ADAPTER || 'velocity').toLowerCase(); }
+
+  // The signal and the committed policy need no keys, so they load even when the live worker cannot.
+  async loadSignal() {
+    if (!this.basePolicy) this.basePolicy = JSON.parse(await fs.readFile(this.env.POLICY_FILE || './policy.example.json', 'utf8'));
+    if (!this.eventSource) this.eventSource = this.makeEventSource();
+    if (!this.market) this.market = await this.eventSource.init();
+  }
+
+  // Start live, or fall back to setup mode: the page keeps showing the live signal, the committed
+  // curve and what is missing, and every state-changing route refuses until the runtime is live.
+  async start() {
+    try {
+      await this.init();
+    } catch (error) {
+      this.mode = 'setup';
+      this.setupError = error.message;
+      this.setupSince = this.setupSince || Date.now();
+      try { await this.loadSignal(); } catch (e) { this.signalError = e.message; }
+    }
+    return this;
+  }
+
+  get live() { return this.mode === 'live'; }
+
+  activePolicy() { return this.engine?.fuse?.policy || this.basePolicy || null; }
+
+  setupState() {
+    const policy = this.activePolicy();
+    const quote = this.quoteView();
+    const permittedNow = quote && policy ? (quote.probability * 10000 < policy.killBelowBps ? 0 : rawTargetForProbability(policy, Math.round(quote.probability * 10000))) : null;
+    return {
+      mode: 'setup',
+      integrity: this.integrity(),
+      market: this.market || null,
+      quote,
+      policy,
+      policyHash: policy ? policyHash(policy) : null,
+      preview: { permittedUsd: permittedNow, note: 'What the committed curve would permit at this quote. Nothing is executed in setup mode.' },
+      setup: { error: this.setupError || null, signalError: this.signalError || null, since: this.setupSince, checklist: setupChecklist(this.env) }
+    };
+  }
+
   makeEventSource() {
-    const kind = (this.env.EVENT_SOURCE || 'polymarket').toLowerCase();
+    const kind = (this.env.EVENT_SOURCE || 'dflow').toLowerCase();
     if (kind === 'polymarket') {
       if (!this.env.POLYMARKET_MARKET) throw new Error('POLYMARKET_MARKET must be selected explicitly for the live mandate');
       const src = new PolymarketEventSource({ market: this.env.POLYMARKET_MARKET, outcome: this.env.POLYMARKET_OUTCOME || 'Yes', gammaUrl: this.env.POLYMARKET_GAMMA_URL, clobUrl: this.env.POLYMARKET_CLOB_URL });
@@ -97,8 +149,9 @@ export class Runtime {
       return src;
     }
     if (kind === 'dflow') {
-      const src = new DFlowEventSource({ baseUrl: this.env.DFLOW_BASE_URL, apiKey: this.env.DFLOW_API_KEY, marketMint: this.env.DFLOW_MARKET_MINT });
-      src.init = async () => ({ kind, id: this.env.DFLOW_MARKET_MINT, question: this.env.DFLOW_MARKET_MINT, outcome: 'YES', url: null, endDateMs: null });
+      const src = new DFlowEventSource({ baseUrl: this.env.DFLOW_BASE_URL, apiKey: this.env.DFLOW_API_KEY, marketMint: this.env.DFLOW_MARKET_MINT, sizeDecimals: this.env.DFLOW_SIZE_DECIMALS, maxIdleSec: this.env.DFLOW_MAX_BOOK_IDLE_SEC });
+      const init = src.init.bind(src);
+      src.init = async () => { const i = await init(); return { kind, id: this.env.DFLOW_MARKET_MINT, ticker: i.ticker, question: i.question, outcome: 'YES', url: null, endDateMs: i.endDateMs, rules: i.rules }; };
       return src;
     }
     throw new Error(`unsupported EVENT_SOURCE=${kind}`);
@@ -108,7 +161,7 @@ export class Runtime {
     const policy = structuredClone(this.basePolicy);
     policy.eventMarket = this.market.id;
     policy.outcomeId = String(this.market.outcome).toUpperCase();
-    policy.venue = (this.env.PERP_ADAPTER || 'drift').toUpperCase();
+    policy.venue = this.venueKind().toUpperCase();
     policy.marketId = this.env.PERP_SYMBOL || 'SOL-PERP';
     // A mandate never outlives the market it is priced on.
     if (this.market.endDateMs) {
@@ -214,6 +267,7 @@ export class Runtime {
   }
 
   startQuoteWatch() {
+    if (!this.eventSource) return;
     const pull = async () => {
       try {
         const raw = await this.eventSource.read();
@@ -238,25 +292,43 @@ export class Runtime {
   quoteView() {
     if (!this.quote) return null;
     const { raw, ...rest } = this.quote;
-    const policy = this.engine.fuse.policy;
+    const policy = this.activePolicy();
+    if (!policy) return null;
     const mark = makeProbabilityMark(raw, policy);
     return {
       ...rest, bid: mark.bid, ask: mark.ask, probability: mark.probability, spreadBps: mark.spreadBps,
       ageSec: mark.ageSec, depthUsd: mark.depthUsd, quality: mark.quality, qualityReason: mark.qualityReason,
-      explain: explainSignal(mark, policy, this.engine.fuse.desiredExposureUsd)
+      explain: explainSignal(mark, policy, this.engine?.fuse?.desiredExposureUsd ?? 0)
     };
   }
 
+  // Independent public observation for judge transparency. It NEVER feeds the risk engine.
+  async marketContext() {
+    const market = this.market || null;
+    const context = await this.kalshiObserver.read(market?.kind === 'dflow' ? market.ticker : null, this.quoteView());
+    return { signalAuthority: 'DFLOW_ONLY', venue: 'VELOCITY_SOL_PERP',
+      dflow: { market:market?.ticker || null, quote:this.quoteView()?.probability ?? null,
+        quoteAgeSec:this.quoteView()?.ageSec ?? null, usable:Boolean(this.quoteView()?.quality) },
+      kalshi:context, disclaimer:'Reference only. No Kalshi account access, order entry or extra trading authorization.' };
+  }
+
+  publicJournal() {
+    return buildDecisionJournal({ fuseId:this.engine?.fuse?.id,
+      decisions:this.decisions || [], receipts:this.receipts || [] });
+  }
+
   async getState() {
+    if (!this.live) return this.setupState();
     const position = await this.perp.getPosition();
     return { integrity: this.integrity(), market: this.market, quote: this.quoteView(), fuse: this.engine.snapshot(), position, receipts: this.receipts, decisions: this.decisions || [] };
   }
 
   integrity() {
     return {
-      onchain: true,
+      onchain: this.live,
+      mode: this.mode || 'setup',
       network: this.env.SOLANA_CLUSTER || 'devnet',
-      perpAdapter: (this.env.PERP_ADAPTER || 'drift').toLowerCase(),
+      perpAdapter: this.venueKind(),
       eventSource: this.market?.kind || null,
       programId: this.env.FUSE_PROGRAM_ID || null,
       fusePda: this.activeFusePda(),
@@ -271,7 +343,7 @@ export class Runtime {
   venueAuthority() {
     return {
       bound: false,
-      venue: (this.env.PERP_ADAPTER || 'drift').toUpperCase(),
+      venue: this.venueKind().toUpperCase(),
       limitation: 'The venue key can trade outside Fuse. The program verifies worker-submitted targets; only a confirmed venue close flattens a position. Owner-controlled revocation or program-signed venue delegation is not implemented in this build.'
     };
   }
@@ -279,7 +351,7 @@ export class Runtime {
   chainReader() {
     const exec = this.chainClients.exec;
     const fuseCluster = this.env.SOLANA_CLUSTER || 'devnet';
-    // A venue on another cluster (e.g. Drift mainnet) is checked through that cluster's RPC.
+    // A venue on another cluster (e.g. Velocity mainnet) is checked through that cluster's RPC.
     const venueConn = this.perp?.connection;
     return {
       txStatus: async (sig, cluster) => {
@@ -305,6 +377,7 @@ export class Runtime {
   }
 
   async proof() {
+    if (!this.live) return { integrity: this.integrity(), program: { value: this.env.FUSE_PROGRAM_ID || null, url: null }, fuseAccount: { value: null, url: null }, transactions: {}, verifiedRun: null };
     const cluster = this.env.SOLANA_CLUSTER || 'devnet';
     const suffix = cluster === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(cluster)}`;
     const base = this.env.SOLSCAN_BASE_URL || 'https://solscan.io';
@@ -348,6 +421,25 @@ export class Runtime {
     await this.decisionWrite;
     if (error) throw error;
     return result;
+  }
+  // Public, read-only: "what would the mandate say if an agent asked for $X right now?"
+  // Same curve, cap, expiry and signal-quality rules as the operator precheck; never trades.
+  publicAgentCheck(targetUsd) {
+    const now = Date.now();
+    if (this.live) {
+      const fuse = this.engine.fuse;
+      return { ...evaluateAgentProposal({ fuse, quote: this.quoteView(), proposal: { targetUsd, fuseId: fuse.id, policyHash: fuse.policyHash, proposedAtMs: now }, nowMs: now }), preview: false };
+    }
+    const policy = this.activePolicy();
+    if (!policy) throw new Error('no committed policy loaded');
+    const fuse = { id: 'setup-preview', status: 'ARMED', policy, policyHash: policyHash(policy) };
+    const out = evaluateAgentProposal({ fuse, quote: this.quoteView(), proposal: { targetUsd, fuseId: fuse.id, policyHash: fuse.policyHash, proposedAtMs: now }, nowMs: now });
+    return { ...out, preview: true, explanation: `Setup mode: checked against the committed curve and cap only. ${out.explanation}` };
+  }
+
+  previewAgentProposal(proposal) {
+    if (!this.live) throw new Error('live mandate not available');
+    return evaluateAgentProposal({ fuse: this.engine.fuse, quote: this.quoteView(), proposal });
   }
   async tick() { return this.runExclusive(() => this.recordDecision('tick', () => this.engine.tick())); }
   async arm() { return this.runExclusive(() => this.recordDecision('arm', () => this.engine.arm())); }

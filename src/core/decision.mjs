@@ -21,6 +21,11 @@ export function makeDecision({ action, fuse, result = null, error = null, positi
   else if (fuse.status === 'KILLED') outcome = 'KILLED_FLAT';
   const explanations = {
     ORACLE_STALE: 'Quote too old. No risk increase.',
+    ORACLE_UNVERIFIED: 'DFlow quote has no trustworthy source update sequence. No risk increase.',
+    ORACLE_UNCHANGED: 'The order book has not changed since the last accepted observation. Holding.',
+    ORACLE_REPLAY: 'The source sequence went backwards. Holding until it advances.',
+    VENUE_PNL_UNAVAILABLE: 'Venue P&L is missing or invalid; prevent increases until risk data recovers.',
+    ORACLE_FUTURE: 'Quote timestamp is in the future. No risk increase.',
     ORACLE_WIDE: 'Prediction spread too wide. No risk increase.',
     ORACLE_THIN: 'Insufficient top-of-book depth. No risk increase.',
     AWAITING_CONFIRMATION: 'Waiting for another consistent observation.',

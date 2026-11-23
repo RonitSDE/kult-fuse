@@ -64,7 +64,7 @@ export class AnchorFuseClient {
       stepExposuresUsd:[...policy.steps.map(s=>this.bn(s.exposureUsd)),this.bn(0),this.bn(0),this.bn(0),this.bn(0),this.bn(0)].slice(0,5),
       riskCapUsd:this.bn(policy.riskCapUsd), maxLeverageBps:policy.maxLeverageBps, killProbabilityBps:policy.killBelowBps,
       hysteresisBps:policy.hysteresisBps, maxOracleAgeSec:policy.maxOracleAgeSec, lossStopUsd:this.bn(policy.lossStopUsd||0),
-      expiryTs:this.bn(policy.expiryTs), venue:1, marketId:bytes32FromText(policy.marketId)
+      expiryTs:this.bn(policy.expiryTs), venue:({ VELOCITY: 2, DRIFT: 1 })[policy.venue] ?? 0, marketId:bytes32FromText(policy.marketId)
     };
     const sig=await this.program.methods.initFuse(this.bn(fuseId),params).accounts({owner:ownerPk,fuse,systemProgram:this.web3.SystemProgram.programId}).rpc();
     this.fusePda=fuse;return{fuse:fuse.toBase58(),signature:sig};

@@ -1,7 +1,12 @@
-# Authority binding: implementation gate, not a claim
+# Authority binding: the next milestone, not a claim
 
-Current build: the worker controls the Drift wallet. A worker with its key can bypass Fuse entirely. The onchain cap, expiry and kill are checks on transactions **submitted to Fuse**. A successful over-cap refusal at Fuse is not a refusal at the venue boundary.
+**Today:** the worker holds the Velocity trading key. Fuse checks every target the worker submits (curve, cap, expiry, kill), but a worker with that key could trade on Velocity directly. A refusal at Fuse is a refusal at Fuse, not at the venue.
 
-To implement a bound version, first verify the target Drift deployment supports placing and closing orders through CPI with the user account authority set to a Fuse-owned PDA, or another enforceable delegation that cannot trade directly. Move effective order authority to that PDA; the worker holds no alternative authority, delegate, owner key, or transferable withdrawal control. Route every order through a Fuse instruction which reads the committed policy and fresh observation, actual venue position, expiry and kill state, caps the resulting venue order, applies bounded limit/IOC terms, and invokes Drift using PDA signer seeds. Emergency close must remain permitted after kill or stale data. If Drift cannot support this custody/delegation pattern, do not label authority bound.
+**The bound version:** the agent cannot exceed the mandate because it has no other way to trade.
 
-Acceptance tests must send **direct** over-cap and post-kill venue orders with every key available to the worker and show both denied at the authority boundary. A reduce-only close after kill must succeed. Revoke/rotate authority and recover an interrupted close. Run Anchor integration tests against the actual Drift program, independently audit the account constraints and deploy anew. Only then replace the UI's UNBOUND indicator and change the product claim.
+1. Velocity's own Vaults program (`vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR`) already trades through a Velocity user account as its **delegate**. That is the precedent to follow: a Fuse-owned PDA becomes the delegate (or authority) of the mandate's Velocity subaccount.
+2. Every order goes through a Fuse instruction that reads the committed policy, the fresh observation, the actual venue position, expiry and kill state, caps the order, applies limit + IOC terms and invokes Velocity with the PDA's signer seeds.
+3. Reduce-only close stays allowed after a kill or during stale data.
+4. The worker keeps no owner key, no other delegate and no withdrawal right.
+
+**Acceptance:** send direct over-cap and post-kill orders to Velocity with every key the worker holds, and show both denied at the venue. Show a reduce-only close after kill succeeding. Rotate authority and recover an interrupted close. Run Anchor integration tests against the real Velocity program, get the account constraints audited, deploy fresh. Only then flip the dashboard's "venue key not bound" disclosure.

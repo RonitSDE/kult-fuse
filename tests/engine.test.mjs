@@ -42,11 +42,14 @@ test('clean path arms, opens, resizes, reduces, kills', async()=>{
   assert.equal(Math.round((await x.perp.getPosition()).exposureUsd),0);
 });
 
-test('oracle replay rejected', async()=>{
+test('a repeated or rewound oracle sequence holds instead of acting', async()=>{
   const x=fixture(); await x.engine.arm();
-  const o={bid:.60,ask:.62,observedAtMs:Date.now(),sequence:1,source:'test'};
+  const o={bid:.60,ask:.62,observedAtMs:Date.now(),sequence:5,source:'test'};
   await x.engine.tick(o);
-  await assert.rejects(()=>x.engine.tick(o),/oracle replay/);
+  assert.equal((await x.engine.tick({...o,observedAtMs:Date.now()})).reason,'ORACLE_UNCHANGED');
+  assert.equal((await x.engine.tick({...o,sequence:3,observedAtMs:Date.now()})).reason,'ORACLE_REPLAY');
+  assert.equal(x.fuse.oracleSequence,5);
+  assert.equal((await x.perp.getPosition()).exposureUsd,0,'the repeat never counted as a confirmation');
 });
 
 test('stale oracle does not increase risk', async()=>{

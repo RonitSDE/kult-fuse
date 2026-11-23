@@ -3,7 +3,9 @@
 import fs from 'node:fs/promises';
 import { FileStore } from '../src/adapters/store/file-store.mjs';
 import { verifyExecution } from '../src/core/verifier.mjs';
-import { driftVenueEvidence } from '../src/adapters/perp/drift-evidence.mjs';
+import { createRequire } from 'node:module';
+import { velocityVenueEvidence } from '../src/adapters/perp/velocity-evidence.mjs';
+import { VELOCITY_PROGRAM } from '../src/adapters/perp/velocity-perp.mjs';
 import { fuseFillEvidence } from '../src/adapters/store/fuse-evidence.mjs';
 
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
@@ -47,7 +49,7 @@ async function onchainFuse() {
   return coder.decode('FuseAccount', info.data);
 }
 
-// Venue fills may live on another cluster than the Fuse program (e.g. Drift mainnet, Fuse devnet).
+// Venue fills may live on another cluster than the Fuse program (e.g. Velocity mainnet, Fuse devnet).
 const PUBLIC_RPC = { 'mainnet-beta': 'https://api.mainnet-beta.solana.com', devnet: 'https://api.devnet.solana.com' };
 const venueConnections = {};
 const connFor = (cluster) => {
@@ -55,21 +57,18 @@ const connFor = (cluster) => {
   return (venueConnections[cluster] ||= new web3.Connection(process.env.VENUE_RPC_URL || PUBLIC_RPC[cluster], 'confirmed'));
 };
 
-let driftProgram;
-async function programForDrift(cluster) {
-  if (driftProgram) return driftProgram;
-  const imported = await import('@drift-labs/sdk');
-  const sdk = imported.default?.DriftClient ? imported.default : imported;
-  const venueEnv = cluster || process.env.DRIFT_ENV || 'devnet';
-  const venueConn = connFor(venueEnv);
-  sdk.initialize({ env: venueEnv });
-  const client = new sdk.DriftClient({
-    connection: venueConn, wallet: new sdk.Wallet(web3.Keypair.generate()), env: venueEnv,
-    perpMarketIndexes: [0], spotMarketIndexes: [0],
-    accountSubscription: { type: 'polling', accountLoader: new sdk.BulkAccountLoader(venueConn, 'confirmed', 1000) }
-  });
-  driftProgram = client.program;
-  return driftProgram;
+// Velocity events are decoded with the SDK's own Anchor 1.0 program, built read-only from its IDL.
+let velocityParser;
+function velocityParse() {
+  if (velocityParser) return velocityParser;
+  const require = createRequire(import.meta.url);
+  const sdk = require('@velocity-exchange/sdk');
+  const { Program, AnchorProvider } = require('@anchor-lang/core');
+  const idl = require('@velocity-exchange/sdk/lib/node/idl/velocity.json');
+  const provider = new AnchorProvider(connection, { publicKey: web3.Keypair.generate().publicKey, signTransaction: async (t) => t, signAllTransactions: async (t) => t }, {});
+  const program = new Program(idl, provider);
+  velocityParser = (logs) => sdk.parseLogs(program, logs, VELOCITY_PROGRAM);
+  return velocityParser;
 }
 
 const chain = {
@@ -84,12 +83,12 @@ const chain = {
     return { confirmed: Boolean(st && ['confirmed', 'finalized'].includes(st.confirmationStatus)), err: st?.err ?? null };
   },
   venueEvidence: async (sig, receipt) => {
-    if (receipt.venue !== 'DRIFT') return { ok: false, why: 'no fill decoder for this venue' };
+    if (receipt.venue !== 'VELOCITY') return { ok: false, why: 'no fill decoder for this venue' };
     if (!expectedVenueUser || receipt.venueRef !== expectedVenueUser) return { ok: false, why: 'expected venue account is missing or mismatched' };
     if (receipt.marketId !== fuse.policy.marketId || receipt.marketId !== 'SOL-PERP') return { ok: false, why: 'perp market mismatch' };
-    return driftVenueEvidence({
-      connection: connFor(receipt.venueCluster), program: await programForDrift(receipt.venueCluster),
-      user: expectedVenueUser, marketIndex: 0, signature: sig, receipt,
+    return velocityVenueEvidence({
+      connection: connFor(receipt.venueCluster), parse: velocityParse(), programId: VELOCITY_PROGRAM,
+      user: expectedVenueUser, marketIndex: Number(process.env.VELOCITY_MARKET_INDEX || 0), signature: sig, receipt,
       toleranceBase: 1e-8
     });
   },

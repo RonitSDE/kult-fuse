@@ -19,7 +19,7 @@ const [health,state,proof] = await Promise.all(['/healthz','/api/state','/api/pr
 const report=assessSubmission({manifest,health,state,proof,publicUrl});
 for(const c of report.checks) console.log(`${c.ok?'PASS':'FAIL'} ${c.name}${c.detail?` — ${c.detail}`:''}`);
 if(!report.ok){console.error('SUBMISSION NOT READY: supply real, matching public proof.');process.exit(1)}
-console.log('\nChecking Solana and Drift transactions independently…');
+console.log('\nChecking Solana and Velocity transactions independently…');
 const verified=spawnSync(process.execPath,['scripts/verify.mjs','--url',publicUrl],{stdio:'inherit',env:process.env});
 if(verified.status!==0)process.exit(verified.status||1);
 console.log('\nSUBMISSION PROOF PASS. Review the video and commit tag manually before submitting.');

@@ -5,10 +5,22 @@
   "outcomeId": "YES",
   "consequence": "SOL-PERP-LONG",
   "steps": [
-    { "pBps": 3500, "exposureUsd": 10 },
-    { "pBps": 5000, "exposureUsd": 15 },
-    { "pBps": 6000, "exposureUsd": 25 },
-    { "pBps": 8000, "exposureUsd": 30 }
+    {
+      "pBps": 3500,
+      "exposureUsd": 10
+    },
+    {
+      "pBps": 5000,
+      "exposureUsd": 15
+    },
+    {
+      "pBps": 6000,
+      "exposureUsd": 25
+    },
+    {
+      "pBps": 8000,
+      "exposureUsd": 30
+    }
   ],
   "killBelowBps": 3500,
   "riskCapUsd": 30,
@@ -20,6 +32,6 @@
   "maxOracleAgeSec": 20,
   "maxSpreadBps": 300,
   "expiryTs": 1893456000,
-  "venue": "DRIFT",
+  "venue": "VELOCITY",
   "marketId": "SOL-PERP"
 }

@@ -1,9 +1,9 @@
 # Integrations
 
-Polymarket public Gamma/CLOB data supplies the event's YES book. The oracle worker submits a quote observation to Fuse; its honesty remains a trust assumption. Select an event directly related to the traded SOL perp and check spread, age and depth.
+**Signal: Kalshi via DFlow.** DFlow tokenizes every Kalshi market on Solana as SPL outcome mints. Fuse reads the YES mint's orderbook (`/api/v1/orderbook/by-mint`): best YES bid, YES ask as 1 − best NO bid, and top-of-book depth in USD. If the book is unavailable it falls back to the market's yesBid/yesAsk with no depth, which a policy with `minTopDepthUsd > 0` treats as THIN, so exposure can't rise. The dev host needs no key. `npm run markets` lists active markets and their YES mints. The oracle worker's honesty is still a trust assumption: it submits the observation to Fuse.
 
-Drift SOL-PERP is the preferred venue adapter. It places a bounded IOC limit order, then reconciles actual base exposure. A read-only decoder checks Drift fill events in the venue transaction against receipt delta. Runtime SDK compatibility, liquidity and a funded wallet still need a live integration test.
+**Execution: Velocity.** Velocity is Drift v2's successor (program `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P`, same id on devnet and mainnet-beta; devnet collateral is dUSDT). The adapter places price-bounded immediate-or-cancel taker orders (Velocity's `OrderParamsBitFlag.ImmediateOrCancel`), then re-reads the account: no base change means no receipt. The verifier decodes `OrderActionRecord` fill events from the venue transaction with the SDK's own parser and matches them to the receipt's base delta. Ported from the Drift adapter against SDK 0.27.0; the live devnet fill is the gate that confirms it.
 
-The Solana/Anchor Fuse program commits the policy and validates submitted target updates. It records a receipt hash after an external fill is reported. It does not hold the Drift key or receive an atomic venue execution guarantee.
+**Policy: the Fuse Anchor program.** Commits the policy hash and validates submitted targets. Records a receipt hash after the worker reports a fill. It does not hold the venue key and does not execute atomically with the venue.
 
-Flash Trade and DFlow adapters remain in source for historical work, but are outside this release's judge path. The previous Flash devnet open was blocked by InstructionNotAllowed. Do not present old Fuse-only signatures as venue execution.
+**Retired:** Drift (replaced by Velocity, no state carried over) and Flash Trade (shut down). Both adapters were removed. Polymarket stays as an optional signal for non-Solana demos.

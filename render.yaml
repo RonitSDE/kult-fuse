@@ -16,16 +16,16 @@ services:
       sizeGB: 1
     envVars:
       - key: NODE_VERSION
-        value: "22.14.0"
+        value: "24"
       - key: NODE_ENV
         value: production
       - key: DATA_DIR
         value: /var/data
       - key: EVENT_SOURCE
-        value: polymarket
+        value: dflow
       - key: PERP_ADAPTER
-        value: drift
-      - key: DRIFT_ENV
+        value: velocity
+      - key: VELOCITY_ENV
         value: devnet
       - key: SOLANA_CLUSTER
         value: devnet
@@ -38,7 +38,7 @@ services:
       - key: POLICY_FILE
         value: ./policy.example.json
       - key: BUILD_TAG
-        value: fuse-order-v1.4
+        value: fuse-v1.9.1
       - key: AUTO_WORKER
         value: "0"
       - key: FUSE_ADMIN_TOKEN
@@ -47,11 +47,11 @@ services:
         sync: false
       - key: PUBLIC_URL
         sync: false
-      - key: POLYMARKET_MARKET
+      - key: DFLOW_MARKET_MINT
         sync: false
-      - key: DRIFT_RPC_URL
+      - key: VELOCITY_RPC_URL
         sync: false
-      - key: DRIFT_PRIVATE_KEY_JSON
+      - key: VELOCITY_PRIVATE_KEY_JSON
         sync: false
       - key: FUSE_OWNER_PRIVATE_KEY_JSON
         sync: false

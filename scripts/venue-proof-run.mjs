@@ -2,7 +2,7 @@
 //
 //   npm run proof:venue -- --dry-run            checks wallets, collateral and the market; sends nothing
 //   npm run proof:venue                          runs both mandates and writes docs/venue-proof.json
-//   npm run proof:venue -- --confirm-mainnet     required when DRIFT_ENV=mainnet-beta (real money)
+//   npm run proof:venue -- --confirm-mainnet     required when VELOCITY_ENV=mainnet-beta (real money)
 //
 // Mandate A: open $15 → resize $25 → over-cap target refused onchain → probability kill → close
 //            → target after kill refused onchain → settle.
@@ -21,9 +21,9 @@ import { verifyExecution } from '../src/core/verifier.mjs';
 import { Reason } from '../src/core/constants.mjs';
 import { fuseFillEvidence } from '../src/adapters/store/fuse-evidence.mjs';
 
-const env = { ...process.env, PERP_ADAPTER: 'drift' };
+const env = { ...process.env, PERP_ADAPTER: 'velocity' };
 const dryRun = process.argv.includes('--dry-run');
-const venueEnv = env.DRIFT_ENV || 'devnet';
+const venueEnv = env.VELOCITY_ENV || env.SOLANA_CLUSTER || 'devnet';
 const fuseCluster = env.SOLANA_CLUSTER || 'devnet';
 const collateralUsd = Number(env.PROOF_COLLATERAL_USD || 12);
 const lossStopUsd = Number(env.PROOF_LOSS_STOP_USD || 1);
@@ -33,7 +33,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (venueEnv === 'mainnet-beta' && !dryRun && !process.argv.includes('--confirm-mainnet')) {
-  console.error('DRIFT_ENV=mainnet-beta places real orders with real USDC. Re-run with --confirm-mainnet.');
+  console.error('VELOCITY_ENV=mainnet-beta places real orders with real collateral. Re-run with --confirm-mainnet.');
   process.exit(2);
 }
 
@@ -47,13 +47,13 @@ for (const [role, key] of [['owner', 'FUSE_OWNER_PRIVATE_KEY_JSON'], ['oracle', 
 async function preflight() {
   const sol = async (conn, pk) => (await conn.getBalance(pk)) / 1e9;
   const pos = await perp.getPosition();
-  const wallet = await perp.walletUsdc();
+  const wallet = await perp.walletQuote();
   const rows = {
-    venue: `Drift ${venueEnv} SOL-PERP @ $${perp.markPrice().toFixed(2)}`,
+    venue: `Velocity ${venueEnv} SOL-PERP @ $${perp.markPrice().toFixed(2)}`,
     venueWallet: perp.kp.publicKey.toBase58(),
     venueWalletSol: await sol(perp.connection, perp.kp.publicKey),
-    venueWalletUsdc: wallet.usdc,
-    driftCollateralUsd: await perp.collateralUsd(),
+    venueWalletQuote: wallet.amount,
+    venueCollateralUsd: await perp.collateralUsd(),
     openPositionUsd: pos.exposureUsd,
     fuseCluster,
     fuseOwnerSol: await sol(clients.owner.provider.connection, clients.owner.wallet.publicKey),
@@ -62,7 +62,7 @@ async function preflight() {
   };
   const problems = [];
   if (rows.venueWalletSol < 0.02) problems.push('venue wallet needs ≥ 0.02 SOL for fees');
-  if (rows.venueWalletUsdc + rows.driftCollateralUsd < collateralUsd) problems.push(`venue needs ≥ $${collateralUsd} USDC (wallet + Drift collateral)`);
+  if (rows.venueWalletQuote + rows.venueCollateralUsd < collateralUsd) problems.push(`venue needs ≥ $${collateralUsd} collateral (wallet + Velocity account); on devnet run npm run venue:setup`);
   if (rows.openPositionUsd > 0.5) problems.push('venue account already holds a SOL-PERP position; close it first');
   for (const r of ['fuseOwnerSol', 'fuseOracleSol', 'fuseExecSol']) if (rows[r] < 0.05) problems.push(`${r} below 0.05 SOL`);
   console.table(rows);
@@ -78,7 +78,7 @@ function scriptedSource() {
 async function newMandate(name, policyOverrides = {}) {
   const policy = { ...JSON.parse(await fs.readFile(env.PROOF_POLICY_FILE || './policy.proof.json', 'utf8')), ...policyOverrides };
   policy.eventMarket = `proof-${name}`;
-  policy.venue = 'DRIFT';
+  policy.venue = 'VELOCITY';
   const { owner, oracle, exec } = clients;
   const fuse = initialFuse({
     id: `proof_${name}_${Date.now()}`, owner: owner.wallet.publicKey.toBase58(), agent: owner.wallet.publicKey.toBase58(),
@@ -198,7 +198,7 @@ const chain = (m) => ({
     program: clients.exec.program, fusePda: m.engine.fuse.chainFuse, signature: sig, receipt })
 });
 
-const result = { label: 'Real-venue proof run. Probability path scripted; Fuse transactions, venue fills, P&L and receipts are real.', venue: 'DRIFT', venueUser: perp.userPk.toBase58(), venueCluster: venueEnv, fuseCluster, programId: env.FUSE_PROGRAM_ID, gitSha: (() => { try { return execSync('git rev-parse HEAD').toString().trim(); } catch { return null; } })(), generatedAt: new Date().toISOString(), venueSetupTxs: perp.setupTxs || [], mandates: [] };
+const result = { label: 'Real-venue proof run. Probability path scripted; Fuse transactions, venue fills, P&L and receipts are real.', venue: 'VELOCITY', venueUser: perp.userPk.toBase58(), venueCluster: venueEnv, fuseCluster, programId: env.FUSE_PROGRAM_ID, gitSha: (() => { try { return execSync('git rev-parse HEAD').toString().trim(); } catch { return null; } })(), generatedAt: new Date().toISOString(), venueSetupTxs: perp.setupTxs || [], mandates: [] };
 for (const m of mandates) {
   const fuse = m.engine.snapshot();
   const verification = await verifyExecution({ fuse, receipts: m.receipts, chain: { ...chain(m), venueEvidence: (sig, receipt) => perp.verifyFillTransaction(sig, receipt) } });

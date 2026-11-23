@@ -1,552 +1,679 @@
+import { DEMO_LABELS, demoSnapshot, isSyntheticState, thresholdRows } from "./experience.mjs";
+// KULT Fuse dashboard. Plain DOM, no build step. All data text goes through textContent.
 const $ = (s) => document.querySelector(s);
-const money = (n, decimals) => {
-  const v = Number(n || 0); const d = decimals ?? (Math.abs(v) < 100 ? 2 : 0);
-  return `${v < 0 ? '-' : ''}$${Math.abs(v).toFixed(d)}`;
+const SVGNS = 'http://www.w3.org/2000/svg';
+const isSig = (v) => typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(v);
+const money = (n, d) => {
+  if (n == null || !Number.isFinite(Number(n))) return '—';
+  const v = Number(n); const dec = d ?? (Math.abs(v) < 100 && v % 1 !== 0 ? 2 : 0);
+  return `${v < 0 ? '−' : ''}$${Math.abs(v).toFixed(dec)}`;
 };
-const short = (h) => h ? `${String(h).slice(0,8)}…${String(h).slice(-8)}` : '—';
-const isSignature = (v) => typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(v);
-const pct = (x, d=1) => Number(x || 0).toFixed(d) + '%';
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-let state = null;
-let proofState = null;
-let proofFailed = false;
-let toastTimer = null;
-let replayMode = false;
-let replayTimer = null;
-const REPLAY_STEPS = [
-  { p: 52, requested: null, kind: 'open', title: 'Open inside the 50% band' },
-  { p: 64, requested: null, kind: 'resize', title: 'Step up inside the 60% band' },
-  { p: 84, requested: null, kind: 'resize', title: 'Step up inside the 80% band' },
-  { p: 29, requested: 0, kind: 'kill', title: 'Probability falls through the kill threshold' },
-  { p: 29, requested: 0, kind: 'closed', title: 'Position closed. Mandate locked.' },
-  { p: 84, requested: 'overCap', kind: 'rejected', title: 'An over-cap reopen is rejected after kill' }
-];
+const pct = (p, d = 1) => (p == null ? '—' : `${(p * 100).toFixed(d)}%`);
+const short = (h) => (h ? `${String(h).slice(0, 6)}…${String(h).slice(-6)}` : '—');
+const words = (code) => String(code || '').replaceAll('_', ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase());
+const el = (tag, props = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') n.className = v; else if (k === 'text') n.textContent = v; else if (k.startsWith('data-') || k.startsWith('aria-')) n.setAttribute(k, v); else n[k] = v;
+  }
+  for (const kid of kids) if (kid != null) n.append(kid);
+  return n;
+};
+const svg = (tag, attrs = {}, text) => {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (text != null) n.textContent = text;
+  return n;
+};
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const TOKEN_KEY='kultFuseOperatorToken';
-function operatorToken(){try{return sessionStorage.getItem(TOKEN_KEY)||''}catch{return ''}}
-function setOperatorToken(t){try{t?sessionStorage.setItem(TOKEN_KEY,t):sessionStorage.removeItem(TOKEN_KEY)}catch{}}
+let state = null;
+let proof = null;
+let marketContext = null;
+let journalData = null;
+let journalFilter = 'ALL';
+let sim = null; // { kind: guided|replay, index, timer? }; presentation only
+
+const TOKEN_KEY = 'kultFuseOperatorToken';
+const token = () => { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
+const setToken = (t) => { try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } };
 
 async function api(path, body) {
-  const headers={'content-type':'application/json'};
-  const token=operatorToken(); if(token) headers.authorization=`Bearer ${token}`;
-  const res = await fetch(path, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'request failed');
+  const headers = { 'content-type': 'application/json' };
+  if (token()) headers.authorization = `Bearer ${token()}`;
+  const res = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
 
-function toast(message, kind='good') {
-  const el=$('#toast'); el.textContent=message; el.className=`toast ${kind} show`;
-  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'),2600);
+let toastTimer;
+function toast(msg, bad = false) {
+  const t = $('#toast'); t.textContent = msg; t.className = `toast show${bad ? ' bad' : ''}`;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
 }
 
-function currentProbability(fuse) {
-  return fuse.lastProbabilityBps > 0 ? fuse.lastProbabilityBps / 100 : null;
+const explorer = (kind, value, cluster) => {
+  const net = cluster || state?.integrity?.network || 'devnet';
+  return `https://solscan.io/${kind}/${encodeURIComponent(value)}${net === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(net)}`}`;
+};
+const txLink = (sig, label, cluster) => el('a', { href: explorer('tx', sig, cluster), target: '_blank', rel: 'noreferrer', text: label });
+
+function permittedAt(policy, pBps) {
+  if (pBps == null) return null;
+  if (pBps < policy.killBelowBps) return 0;
+  let t = 0; for (const s of policy.steps) { if (pBps >= s.pBps) t = s.exposureUsd; else break; }
+  return Math.min(t, policy.riskCapUsd);
 }
 
-function rawTarget(policy,pBps){
-  let target=0; for(const s of policy.steps){if(pBps>=s.pBps) target=s.exposureUsd; else break;} return Math.min(target,policy.riskCapUsd);
-}
-
-function renderCurve(fuse, pBps, force) {
-  const el=$('#curve'); if(!el) return; el.innerHTML='';
-  const policy=fuse.policy;
-  const probability=pBps==null?currentProbability(fuse):pBps/100;
-  const bps=pBps==null?(probability==null?null:Math.round(probability*100)):pBps;
-  const killed=Boolean(force?.killed) || (bps!=null && bps<policy.killBelowBps);
-  const permitted=force && Object.hasOwn(force,'permitted') ? force.permitted : (bps==null?fuse.desiredExposureUsd:(killed?0:rawTarget(policy,bps)));
-  const kill=document.createElement('div');
-  kill.className=`curve-step kill-step ${killed?'active':''}`;
-  kill.style.setProperty('--h','8%');
-  kill.innerHTML=`<span>&lt; ${(policy.killBelowBps/100).toFixed(0)}% probability</span><b>KILL · $0</b>`;
-  el.appendChild(kill);
-  for (const s of policy.steps) {
-    const active=!killed && permitted===s.exposureUsd && bps!=null && bps>=s.pBps;
-    const d=document.createElement('div'); d.className=`curve-step ${active?'active':''}`;
-    const h=Math.max(12,Math.round(s.exposureUsd/policy.riskCapUsd*100));
-    d.style.setProperty('--h',`${h}%`);
-    d.innerHTML=`<span>≥ ${(s.pBps/100).toFixed(0)}%</span><b>${money(s.exposureUsd)}</b>`;
-    el.appendChild(d);
-  }
-  if($('#curveNowP')) $('#curveNowP').textContent=bps==null?'—':pct(bps/100);
-  if($('#curveNowE')) $('#curveNowE').textContent=bps==null?'—':money(permitted,0);
-  const needle=$('#curveNeedle');
-  if(needle && bps!=null){ needle.style.left=`${Math.max(0,Math.min(100,bps/100))}%`; }
-  if($('#curveNeedleLabel') && bps!=null){
-    $('#curveNeedleLabel').textContent=pct(bps/100);
-    $('#curveNeedleLabel').style.left=`${Math.max(2,Math.min(92,bps/100))}%`;
-  }
-  return { bps, permitted, killed };
-}
-
-function explorerUrl(kind,value,network){
-  const net=network||state?.integrity?.network||'devnet';
-  return `https://solscan.io/${kind}/${encodeURIComponent(value)}${net==='mainnet-beta'?'':`?cluster=${encodeURIComponent(net)}`}`;
-}
-
-function receiptTxLink(r){
-  const links=[];
-  if(isSignature(r.txSignature)) links.push(`<a href="${explorerUrl('tx',r.txSignature,r.venueCluster)}" target="_blank" rel="noreferrer">VENUE TX ↗</a>`);
-  const anchored=r.chain?.txs?.filter(t=>t.ix==='record_fill').at(-1)||r.chain?.txs?.at(-1);
-  if(anchored) links.push(`<a href="${explorerUrl('tx',anchored.signature)}" target="_blank" rel="noreferrer">ON-CHAIN ↗</a>`);
-  return links.join(' ');
-}
-
-function renderLiveChainProof(f,integrity={}){
-  if(!integrity.onchain) return;
-  if(integrity.fusePda) setProofLink('#proofPda',{value:integrity.fusePda,url:explorerUrl('account',integrity.fusePda)});
-  const kill=(f.chainTxs||[]).filter(t=>t.ix.startsWith('trigger_')).at(-1);
-  if(kill) setProofLink('#proofKillTx',{value:kill.signature,url:explorerUrl('tx',kill.signature)});
-}
-
-function renderReceipts(receipts=[]) {
-  $('#receiptCount').textContent=`${receipts.length} RECEIPT${receipts.length===1?'':'S'}`;
-  const verified=Boolean(proofState?.verifiedRun?.source==='live' && receipts.length && proofState.verifiedRun.receipts.length===receipts.length && receipts.every((r,i)=>r.hash===proofState.verifiedRun.receipts[i]?.hash));
-  $('#proofReceiptCopy').textContent=verified?`${receipts.length} independently verified fill${receipts.length===1?'':'s'}`:receipts.length?`${receipts.length} receipt${receipts.length===1?'':'s'}; run the verifier`:'No fill to verify yet';
-  $('#proofReceipts').className=`proof-icon ${verified?'':'muted'}`; $('#proofReceipts').textContent=verified?'✓':'·';
-  const el=$('#receipts');
-  if(!receipts.length){el.className='receipts empty';el.textContent='No execution receipts yet.';return;}
-  el.className='receipts';el.innerHTML='';
-  [...receipts].reverse().slice(0,14).forEach(r=>{
-    const delta=Number(r.filledExposureAfterUsd)-Number(r.actualExposureBeforeUsd);
-    const d=document.createElement('div');d.className='receipt';
-    const deltaClass=r.reason==='KILL_PROBABILITY'||r.reason==='EMERGENCY_KILL'?'kill':delta>=0?'up':'down';
-    d.innerHTML=`<div><b>${r.reason.replaceAll('_',' ')}</b><small>P ${(r.observedProbabilityBps/100).toFixed(1)}% · target ${money(r.desiredExposureAfterUsd)} · actual ${money(r.filledExposureAfterUsd)}</small><code>${short(r.hash)}</code>${receiptTxLink(r)}${r.txSignature?`<small class="${r.anchor?.status==='ANCHORED'?'':'warn'}">${r.anchor?.status==='ANCHORED'?'anchored onchain':'UNVERIFIED · not anchored'}</small>`:''}</div><div class="delta ${deltaClass}">${delta>=0?'+':''}${money(delta)}</div>`;
-    el.appendChild(d);
+// Text with `code` spans, built without innerHTML.
+function setRich(node, text) {
+  node.replaceChildren();
+  String(text ?? '').split(/(`[^`]+`)/).forEach((part) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) node.append(el('code', { text: part.slice(1, -1) }));
+    else if (part) node.append(document.createTextNode(part));
   });
+  return node;
 }
 
-function setFlowActive(id,on=true){$(id)?.classList.toggle('active',on)}
+/* ---------------- curve instrument ---------------- */
+const G = { x0: 46, x1: 624, y0: 282, y1: 22 };
+const curveScale = (policy) => {
+  const top = policy.riskCapUsd * 1.18;
+  return { x: (p) => G.x0 + (G.x1 - G.x0) * p, y: (usd) => G.y0 - (G.y0 - G.y1) * (usd / top) };
+};
 
-function renderDecisions(decisions=[]){
-  const root=$('#decisionJournal'); if(!root) return;
+function drawCurve(policy, view) {
+  const root = $('#curve');
   root.replaceChildren();
-  if(!decisions.length){root.textContent='No worker decisions recorded for this mandate.';return;}
-  for(const entry of [...decisions].reverse().slice(0,6)){
-    const row=document.createElement('div'); row.className='decision-entry';
-    const head=document.createElement('div'); head.className='decision-entry-head';
-    const outcome=document.createElement('strong');outcome.textContent=String(entry.outcome||'UNKNOWN').replaceAll('_',' ');
-    outcome.dataset.outcome=entry.outcome||'UNKNOWN';
-    const time=document.createElement('time');time.textContent=`${new Date(entry.at).toLocaleTimeString()}${entry.repeatCount>1?` · ×${entry.repeatCount}`:''}`;
-    head.append(outcome,time);
-    const detail=document.createElement('p');detail.textContent=entry.explanation||'No new execution.';
-    const meta=document.createElement('small');
-    const actual=entry.venueExposureUsd==null?'unavailable':money(entry.venueExposureUsd);
-    meta.textContent=`${entry.reason||'—'} · target ${money(entry.targetUsd)} · venue ${actual} · worker log only`;
-    row.append(head,detail,meta);
-    if(isSignature(entry.venueSignature)){
-      const link=document.createElement('a');link.href=explorerUrl('tx',entry.venueSignature,state?.position?.cluster);
-      link.target='_blank';link.rel='noreferrer';link.textContent='Venue tx · verify separately ↗';row.append(link);
-    }
-    root.append(row);
+  if (!policy) return;
+  const { x, y } = curveScale(policy);
+  const kill = policy.killBelowBps / 10000;
+  // grid + axes
+  for (const p of [0, 0.25, 0.5, 0.75, 1]) {
+    root.append(svg('line', { class: 'grid', x1: x(p), x2: x(p), y1: G.y1, y2: G.y0 }));
+    root.append(svg('text', { class: 'tick', x: x(p), y: G.y0 + 20, 'text-anchor': p === 0 ? 'start' : p === 1 ? 'end' : 'middle' }, `${p * 100}%`));
   }
-}
-
-function setProofLink(selector, item) {
-  const el=$(selector); if(!el) return;
-  el.classList.remove('proof-live','proof-loading','proof-missing');
-  if(!proofState && !proofFailed){
-    el.textContent='Fetching Solana proof…'; el.classList.add('proof-loading'); el.removeAttribute('href'); return;
-  }
-  if(proofFailed){
-    el.textContent='Proof request failed'; el.classList.add('proof-missing'); el.removeAttribute('href'); return;
-  }
-  if(item?.value && item?.url){el.textContent=short(item.value);el.href=item.url;el.classList.add('proof-live'); return;}
-  el.textContent='No transaction on this mandate yet'; el.classList.add('proof-missing'); el.removeAttribute('href');
-}
-
-function showFeatured({prob,permitted,requested,actual,cap,nonce,hash,hashLabel,tx,verdict,raw}){
-  $('#rfProb').textContent=prob;
-  $('#rfPermitted').textContent=permitted;
-  $('#rfRequested').textContent=requested;
-  $('#rfActual').textContent=actual;
-  $('#rfCap').textContent=cap;
-  $('#rfNonce').textContent=nonce;
-  $('#rfHashLabel').textContent=hashLabel||'RECEIPT HASH';
-  $('#rfHash').textContent=hash||'—';
-  const verdictEl=$('#receiptVerdict');
-  verdictEl.textContent=verdict;
-  verdictEl.className=`receipt-verdict ${verdict==='REJECTED'?'bad':verdict==='PASS'?'good':''}`;
-  const link=$('#rfTx');
-  link.classList.remove('proof-live','proof-loading','proof-missing');
-  if(tx?.value && tx?.url){ link.textContent=short(tx.value); link.href=tx.url; link.classList.add('proof-live'); }
-  else if(!proofState && !proofFailed){ link.textContent='Fetching Solana proof…'; link.removeAttribute('href'); link.classList.add('proof-loading'); }
-  else if(proofFailed){ link.textContent='Proof request failed'; link.removeAttribute('href'); link.classList.add('proof-missing'); }
-  else { link.textContent='No transaction on this mandate yet'; link.removeAttribute('href'); link.classList.add('proof-missing'); }
-  $('#rfRaw').textContent=raw||'No raw receipt yet.';
-}
-
-function renderIntegrity(integrity={}) {
-  const live=Boolean(integrity.onchain);
-  const label=`${String(integrity.network||'devnet').toUpperCase()} LIVE`;
-  $('#integrityLabel').textContent=label; $('#integrityLabel').className=`proof-dot ${live?'proof-live':'proof-local'}`;
-  $('#chainProofMode').textContent=label;
-  $('#networkLabel').textContent=`${String(integrity.network||'devnet').toUpperCase()} · ${String(integrity.perpAdapter||'').toUpperCase()}`;
-  $('#venueLabel').textContent=String(integrity.perpAdapter||'drift').toLowerCase()==='flash'?'Flash Trade':String(integrity.perpAdapter||'drift').toUpperCase();
-  $('#eventSourceLabel').textContent=integrity.eventSource==='dflow'?'DFlow / Kalshi':'Polymarket';
-  $('#proofBuild').textContent=`${integrity.buildTag||'dev'} · ${short(integrity.buildSha)}`;
-}
-
-async function loadProof(){
-  try{
-    proofFailed=false;
-    proofState=await api('/api/proof');
-    setProofLink('#proofProgram',proofState.program);
-    setProofLink('#proofPda',proofState.fuseAccount);
-    setProofLink('#proofTarget',proofState.transactions?.target);
-    setProofLink('#proofKillTx',proofState.transactions?.kill);
-    setProofLink('#proofVenueOpen',proofState.transactions?.venueOpen);
-    setProofLink('#proofVenueResize',proofState.transactions?.venueResize);
-    setProofLink('#proofVenueClose',proofState.transactions?.venueClose);
-    const verified=proofState.verifiedRun;
-    const ready=Boolean(verified?.receipts?.length && verified.receipts.every(r=>r?.hash && isSignature(r?.txSignature)));
-    $('#verifiedReplayBtn')?.classList.toggle('hidden',!ready);
-    if(ready && !replayTimer) $('#verifiedReplayBtn').textContent=verified.source==='live'?'VERIFIED REPLAY':'RECORDED REPLAY';
-    renderIntegrity(proofState.integrity||{});
-    if(state && !replayMode) render(state);
-  }catch{
-    proofFailed=true;
-    $('#verifiedReplayBtn')?.classList.add('hidden');
-    for (const id of ['#proofProgram','#proofPda','#proofTarget','#proofKillTx','#proofVenueOpen','#proofVenueResize','#proofVenueClose']) setProofLink(id,null);
-  }
-}
-
-
-function render(s) {
-  state=s; const f=s.fuse,p=s.position,receipts=s.receipts||[], sig=f.lastSignal;
-  const pDisplay=currentProbability(f);
-  $('#statusBadge').textContent=f.status; $('#statusBadge').className=`status-pill ${f.status.toLowerCase()}`;
-  renderIntegrity(s.integrity||{});
-  renderMarket(s.market);
-  $('#policyHash').textContent=f.policyHash;
-  $('#probability').textContent=pDisplay==null?'—':pct(pDisplay); $('#flowP').textContent=pDisplay==null?'—':pct(pDisplay);
-  $('#probDial').style.setProperty('--p',Math.max(0,Math.min(100,pDisplay??0)));
-  $('#target').textContent=money(f.desiredExposureUsd); $('#flowTarget').textContent=money(f.desiredExposureUsd);
-  $('#filled').textContent=money(p.exposureUsd); $('#flowFilled').textContent=money(p.exposureUsd);
-  if($('#perpSide')) $('#perpSide').textContent=`SOL-PERP ${(p.side||'long').toUpperCase()}`;
-  $('#cap').textContent=money(f.policy.riskCapUsd); $('#capHero').textContent=money(f.policy.riskCapUsd);
-  $('#kill').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`; $('#killHero').textContent=`<${(f.policy.killBelowBps/100).toFixed(0)}%`;
-  $('#markPrice').textContent=p.markPrice?money(p.markPrice,2):'—';
-  $('#pnl').textContent=p.unrealizedPnlUsd==null?'—':money(p.unrealizedPnlUsd,2);
-  const stop=Number(f.policy?.lossStopUsd||0);
-  if($('#lossStopNote')) {
-    $('#lossStopNote').classList.toggle('hidden',!f.lossStop?.closeTxSignature);
-    $('#lossStopNote').textContent=stop>0?`Observed venue P&L triggered a close at −$${stop}. Execution price and final loss can differ; Fuse does not calculate P&L.`:'';
-  }
-  const ls=f.lossStop, lsEl=$('#lossStopEvidence');
-  if(lsEl){
-    lsEl.classList.toggle('hidden',!ls);
-    if(ls) lsEl.innerHTML=`<b>Loss stop fired</b> ${new Date(ls.triggeredAt).toLocaleString()} at P&amp;L ${money(ls.triggerPnlUsd,2)} (trigger ${money(ls.thresholdUsd,2)}) on ${money(ls.positionUsd)}. Close receipt <code>${short(ls.closeReceiptHash)}</code> · ${isSignature(ls.closeTxSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',ls.closeTxSignature,p.cluster)}">close tx ${short(ls.closeTxSignature)}</a>`:'no close transaction recorded'} · residual ${money(ls.residualUsd)}.`;
-  }
-  const va=s.integrity?.venueAuthority;
-  if($('#authorityNote')&&va) $('#authorityNote').textContent=va.bound?'Venue authority verified as bound by the deployed program.':`Venue authority not bound. ${va.limitation}`;
-  if($('#authorityHero')) $('#authorityHero').textContent=va?.bound?'BOUND':'UNBOUND';
-  if($('#trustBoundaryCopy')&&va) $('#trustBoundaryCopy').textContent=va.limitation;
-  const q=s.quote;
-  if($('#liveQuote')){
-    if(q?.bid!=null && q?.ask!=null){
-      const mid=((Number(q.bid)+Number(q.ask))/2)*100;
-      $('#liveQuote').textContent=`${q.question||'Polymarket'}: ${mid.toFixed(1)}% · bid ${(Number(q.bid)*100).toFixed(1)}% · ask ${(Number(q.ask)*100).toFixed(1)}% · spread ${q.spreadBps} bps · ${Number(q.ageSec).toFixed(0)}s old`;
-    }else $('#liveQuote').textContent='No current Polymarket quote. Risk increases are on hold.';
-  }
-  $('#lastSync').textContent=`Backend synchronized ${new Date().toLocaleTimeString()} · ${s.integrity?.network||'unknown cluster'}`;
-  $('#clusterLabel').textContent=String(s.integrity?.network||'—').toUpperCase();
-  const actualUsd=Math.abs(Number(p.exposureUsd||0));
-  let action='HOLD',detail='Waiting for a usable quote and armed mandate.',tone='hold';
-  if(f.status==='KILLED') {
-    action=actualUsd>=0.01?'CLOSE PENDING':'KILLED · FLAT'; tone=actualUsd>=0.01?'danger':'hold';
-    detail=actualUsd>=0.01?`Fuse is killed but ${money(actualUsd)} remains on the venue. A separate close must confirm.`:'The venue reports zero exposure. This mandate cannot reopen through Fuse.';
-  } else if(!['ARMED','OPEN','REDUCING'].includes(f.status)) {
-    detail=f.status==='PROPOSED'?'The operator must arm the committed policy before the worker can trade.':'This mandate has settled.';
-  } else if(!q || !q.quality) {
-    detail=q?`${q.qualityReason} quote: no new risk increase. Existing venue exposure is ${money(actualUsd)}.`:'Quote unavailable: no new risk increase.';
-  } else if(Number(f.desiredExposureUsd)>Number(p.exposureUsd)+Number(f.policy.minRebalanceUsd||0)) {
-    action='INCREASE REQUESTED';tone='active';detail='The committed curve permits this target. Check the venue fill separately.';
-  } else if(Number(f.desiredExposureUsd)<Number(p.exposureUsd)-Number(f.policy.minRebalanceUsd||0)) {
-    action='REDUCE REQUESTED';tone='warn';detail='The venue position is above the target. A reduction still needs a venue fill.';
-  } else {
-    action='WITHIN TARGET';tone='active';detail='The actual venue position is near the current target. Inspect receipts for execution proof.';
-  }
-  $('#decisionTitle').textContent=action;$('#decisionDetail').textContent=detail;
-  $('#decisionPermitted').textContent=money(f.desiredExposureUsd);$('#decisionActual').textContent=money(p.exposureUsd);
-  $('#decisionIcon').textContent=tone==='danger'?'!':tone==='active'?'↗':'·';
-  $('.decision-panel').dataset.tone=tone;
-  $('#reason').textContent=(f.lastReasonCode||'NOOP').replaceAll('_',' '); $('#receiptHash').textContent=short(f.policyHash);
-  $('#expectedTarget').textContent=money(f.status==='KILLED'||pDisplay==null?0:rawTarget(f.policy,Math.round(pDisplay*100)));
-  $('#policyResult').textContent=Math.abs(f.desiredExposureUsd)>f.policy.riskCapUsd?'VIOLATION':f.status==='PROPOSED'?'NOT ARMED':!q?.quality?'NO INCREASE':'TARGET IN BOUNDS';
-  $('#policyResult').className=Math.abs(f.desiredExposureUsd)<=f.policy.riskCapUsd&&q?.quality?'green':'';
-  const util=Math.min(100,Math.abs(Number(p.exposureUsd||0))/f.policy.riskCapUsd*100); $('#riskBar').style.width=`${util}%`; $('#riskUtil').textContent=`${util.toFixed(0)}%`;
-  const op=Boolean(operatorToken()), active=['ARMED','OPEN','REDUCING'].includes(f.status);
-  $('#armBtn').disabled=!op||f.status!=='PROPOSED';
-  $('#tickBtn').disabled=!op||!active;
-  $('#emergencyKillBtn').disabled=!op||['PROPOSED','KILLED','SETTLED'].includes(f.status);
-  $('#settleBtn').disabled=!op||!['KILLED','ARMED','OPEN','REDUCING'].includes(f.status)||Math.abs(Number(p.exposureUsd||0))>=0.01;
-  $('#newFuseBtn').disabled=!op||!['KILLED','SETTLED'].includes(f.status);
-  $('#operatorBtn').textContent=op?'Operator · signed in':'Operator';
-
-  // The latest quote wins over the worker's last accepted tick, so a frozen feed shows its real age.
-  const book=q?.bid!=null?q:sig;
-  $('#quoteAge').textContent=book?.ageSec==null?'—':`${Number(book.ageSec).toFixed(0)}s`;
-  $('#quoteDepth').textContent=book?.depthUsd==null?'—':money(book.depthUsd,0);
-  $('#signalExplain').textContent=book?.explain||'Waiting for a quote.';
-  if(book){
-    $('#bid').textContent=pct(book.bid*100); $('#ask').textContent=pct(book.ask*100); $('#spread').textContent=book.spreadBps==null?'—':`${book.spreadBps} bps`; $('#sequence').textContent=f.oracleSequence;
-    $('#signalQuality').textContent=book.quality?'USABLE SIGNAL':`${book.qualityReason} — NO INCREASE`;
-    $('#signalQuality').style.color=book.quality?'var(--lime)':'var(--amber)';
-    $('#flowSource').textContent=String(book.source||'EVENT SOURCE').split(':')[0].toUpperCase();
-  }else{
-    $('#bid').textContent='—';$('#ask').textContent='—';$('#spread').textContent='—';$('#sequence').textContent=f.oracleSequence||0;$('#signalQuality').textContent='AWAITING SIGNAL';$('#flowSource').textContent=String(s.integrity?.eventSource||'').toUpperCase();
-  }
-  const runVerified=Boolean(proofState?.verifiedRun?.source==='live' && receipts.length && proofState.verifiedRun.receipts.length===receipts.length && receipts.every((r,i)=>r.hash===proofState.verifiedRun.receipts[i]?.hash));
-  $('#flowProofText').textContent=runVerified?'VERIFIED':receipts.length?'CHECK FILLS':'NO FILLS';
-  setFlowActive('#flowSignal',Boolean(q?.quality));setFlowActive('#flowPolicy',f.desiredExposureUsd!==0||f.status==='KILLED');setFlowActive('#flowPosition',Math.abs(Number(p.exposureUsd||0))>0||f.status==='KILLED');setFlowActive('#flowProof',runVerified);
-  const onchainKill=f.status==='KILLED'&&(f.chainTxs||[]).some(t=>String(t.ix).startsWith('trigger_')&&isSignature(t.signature));
-  $('#proofKill').textContent=onchainKill?'✓':'·'; $('#proofKill').className=`proof-icon ${onchainKill?'':'muted'}`;
-  const committed=(f.chainTxs||[]).some(t=>t.ix==='init_fuse'&&isSignature(t.signature));
-  $('#proofCommit').textContent=committed?'✓':'·'; $('#proofCommit').className=`proof-icon ${committed?'':'muted'}`;
-  const targetProven=(f.chainTxs||[]).some(t=>t.ix==='set_target'&&isSignature(t.signature));
-  $('#proofCurve').textContent=targetProven?'✓':'·'; $('#proofCurve').className=`proof-icon ${targetProven?'':'muted'}`;
-  const curve=renderCurve(f);
-  const latest=receipts.at(-1);
-  if(!replayMode){
-    const steps=f.policy.steps||[];
-    const example=steps.length>1?`${pct(steps[0].pBps/100)} permits ${money(steps[0].exposureUsd)}; ${pct(steps[1].pBps/100)} permits ${money(steps[1].exposureUsd)}.`:'The user commits an exposure rule before execution.';
-    $('#heroExample').textContent=`${example} The quote proposes a target on ${f.policy.marketId||'the selected perp'}. Fuse checks the target; verify a venue fill separately. The worker's venue key is ${va?.bound?'bound to the policy':'not yet bound'}.`;
-    $('#heroMarket').textContent=s.market?.question?`Committed market · ${s.market.question}`:'Committed market loading…';
-    if(latest){
-      showFeatured({
-        prob:pct(latest.observedProbabilityBps/100),
-        permitted:money(latest.desiredExposureAfterUsd),
-        requested:money(latest.desiredExposureAfterUsd),
-        actual:money(latest.filledExposureAfterUsd),
-        cap:money(f.policy.riskCapUsd),
-        nonce:String(latest.sequence),
-        hash:latest.hash,
-        tx:isSignature(latest.txSignature)?{value:latest.txSignature,url:explorerUrl('tx',latest.txSignature,latest.venueCluster)}:null,
-        verdict:proofState?.verifiedRun?.source==='live'&&proofState.verifiedRun.receipts.some(r=>r.hash===latest.hash)?'PASS':'WAITING',
-        raw:JSON.stringify(latest,null,2)
-      });
-    }else if(curve){
-      showFeatured({
-        prob:curve.bps==null?'—':pct(curve.bps/100),
-        permitted:money(curve.permitted),
-        requested:money(curve.permitted),
-        actual:money(p.exposureUsd),
-        cap:money(f.policy.riskCapUsd),
-        nonce:f.executionNonce?String(f.executionNonce):'—',
-        hash:f.lastReceiptHash||f.policyHash,
-        hashLabel:f.lastReceiptHash?'RECEIPT HASH':'POLICY HASH',
-        tx:null,
-        verdict:'WAITING',
-        raw:f.lastReceiptHash?`policy ${f.policyHash}\nreceipt head ${f.lastReceiptHash}`:`policy ${f.policyHash}`
-      });
-    }
-  }
-  renderReceipts(receipts);renderDecisions(s.decisions||[]);renderLiveChainProof(f,s.integrity);
-}
-
-function applyReplayStep(step,index){
-  const f=state.fuse;
-  const bps=Math.round(step.p*100);
-  const killed=step.kind==='kill'||step.kind==='closed'||step.kind==='rejected';
-  const permitted=killed?0:rawTarget(f.policy,bps);
-  const requested=step.requested==='overCap'?f.policy.riskCapUsd+10:step.requested==null?permitted:step.requested;
-  const actual=step.kind==='rejected'||step.kind==='closed'||step.kind==='kill'?0:permitted;
-  const rejected=step.kind==='rejected'||(requested>permitted);
-  renderCurve(f,bps,killed?{killed:true,permitted:0}:undefined);
-  $('#curveMode').textContent=`SIMULATION ${index+1}/${REPLAY_STEPS.length}`;
-  $('#curveNote').textContent=step.title;
-  $('#probability').textContent=pct(step.p);
-  $('#flowP').textContent=pct(step.p);
-  $('#probDial').style.setProperty('--p',step.p);
-  $('#target').textContent=money(permitted);
-  $('#flowTarget').textContent=money(permitted);
-  $('#filled').textContent=money(actual);
-  $('#flowFilled').textContent=money(actual);
-  $('#expectedTarget').textContent=money(permitted);
-  $('#policyResult').textContent=rejected?'REJECTED':'PASS';
-  $('#policyResult').className=rejected?'':'green';
-  $('#statusBadge').textContent=step.kind==='rejected'?'REJECTED':killed?'KILLED':'OPEN';
-  $('#statusBadge').className=`status-pill ${killed?'killed':'open'}`;
-  const killEl=$('#killMoment');
-  killEl.classList.toggle('hidden',!killed);
-  $('#killMomentTitle').textContent=step.kind==='rejected'
-    ?'Simulation: killed mandate rejects a reopen.'
-    :'Simulation: killed mandate requests a close.';
-  $('#rejectLine').classList.toggle('hidden',step.kind!=='rejected');
-  if(step.kind==='rejected') $('#rejectLine').textContent=`Simulation: the agent requests ${money(requested)}. The killed mandate refuses a reopen; permitted exposure remains $0.`;
-  const tx=null; // A paper story never borrows a real explorer link.
-  showFeatured({
-    prob:pct(step.p),
-    permitted:money(permitted,0),
-    requested:money(requested,0),
-    actual:money(actual,0),
-    cap:money(f.policy.riskCapUsd,0),
-    nonce:String(index+1),
-    hash:f.policyHash,
-    hashLabel:'POLICY HASH',
-    tx,
-    verdict:rejected?'REJECTED':'SIMULATION',
-    raw:JSON.stringify({mode:'simulation',step:index+1,probability:step.p,permittedUsd:permitted,requestedUsd:requested,actualUsd:actual,riskCapUsd:f.policy.riskCapUsd,policyHash:f.policyHash,solana:tx?.value||null,verdict:rejected?'REJECTED':'SIMULATION'},null,2)
+  root.append(svg('line', { class: 'axis', x1: G.x0, x2: G.x1, y1: G.y0, y2: G.y0 }));
+  root.append(svg('text', { class: 'tick', x: G.x0 - 8, y: y(0) + 4, 'text-anchor': 'end' }, '$0'));
+  root.append(svg('text', { class: 'tick', x: G.x0 - 8, y: y(policy.riskCapUsd) + 4, 'text-anchor': 'end' }, money(policy.riskCapUsd)));
+  // kill zone
+  root.append(svg('rect', { class: 'killzone', x: x(0), y: G.y1, width: x(kill) - x(0), height: G.y0 - G.y1 }));
+  root.append(svg('text', { class: 'killlabel', x: x(kill / 2), y: G.y1 + 18, 'text-anchor': 'middle' }, `Kill · $0`));
+  // steps
+  const segs = [];
+  policy.steps.forEach((s, i) => {
+    const from = Math.max(s.pBps / 10000, kill);
+    const to = i + 1 < policy.steps.length ? policy.steps[i + 1].pBps / 10000 : 1;
+    if (to > from) segs.push({ from, to, usd: Math.min(s.exposureUsd, policy.riskCapUsd) });
   });
-  $('#featuredReceipt').scrollIntoView({behavior:'smooth',block:'nearest'});
+  const activeUsd = view.killed ? null : view.permitted;
+  for (const sgm of segs) {
+    const on = activeUsd != null && view.p != null && view.p >= sgm.from && view.p < sgm.to + 1e-9 && sgm.usd === activeUsd;
+    root.append(svg('rect', { class: `stepfill${on ? ' on' : ''}`, x: x(sgm.from), y: y(sgm.usd), width: x(sgm.to) - x(sgm.from), height: y(0) - y(sgm.usd) }));
+    root.append(svg('text', { class: `steplabel${on ? ' on' : ''}`, x: (x(sgm.from) + x(sgm.to)) / 2, y: y(sgm.usd) - 8, 'text-anchor': 'middle' }, money(sgm.usd)));
+  }
+  let d = `M ${x(0)} ${y(0)} L ${x(segs[0]?.from ?? kill)} ${y(0)}`;
+  for (const sgm of segs) d += ` L ${x(sgm.from)} ${y(sgm.usd)} L ${x(sgm.to)} ${y(sgm.usd)}`;
+  root.append(svg('path', { class: 'step', d }));
+  // cap
+  root.append(svg('line', { class: 'cap', x1: G.x0, x2: G.x1, y1: y(policy.riskCapUsd), y2: y(policy.riskCapUsd) }));
+  root.append(svg('text', { class: 'caplabel', x: x(kill) + 8, y: y(policy.riskCapUsd) - 7, 'text-anchor': 'start' }, `Hard cap ${money(policy.riskCapUsd)}`));
+  // an allowed agent ask
+  if (view.allowedAsk != null && view.p != null) {
+    const ay = y(Math.min(view.allowedAsk, policy.riskCapUsd * 1.15));
+    const right = x(view.p) > x(0.7);
+    root.append(svg('line', { class: 'allowed', x1: x(view.p) - 60, x2: x(view.p) + 60, y1: ay, y2: ay }));
+    root.append(svg('text', { class: 'allowedlabel', x: right ? x(view.p) - 66 : x(view.p) + 66, y: ay + 4, 'text-anchor': right ? 'end' : 'start' }, `Agent asked ${money(view.allowedAsk)} · within mandate`));
+  }
+  // rejected request (simulation, replay or an agent ask)
+  if (view.requested != null && (view.refused || view.requested > (view.permitted ?? 0)) && view.p != null) {
+    const ry = y(Math.min(view.requested, policy.riskCapUsd * 1.15));
+    root.append(svg('line', { class: 'rejected', x1: x(view.p) - 60, x2: x(view.p) + 60, y1: ry, y2: ry }));
+    // Keep the chart uncluttered: the accessible decision panel gives the refusal reason.
+    // In particular, a refused request at the cap must not obscure the cap line label.
+  }
+  // needle and actual position
+  if (view.p != null) {
+    const nx = x(view.p);
+    const needle = svg('line', { class: 'needle', x1: 0, x2: 0, y1: G.y1 - 4, y2: G.y0 });
+    const head = svg('circle', { class: 'needlehead', cx: 0, cy: G.y1 - 6, r: 5 });
+    const label = svg('text', { class: 'needlelabel', x: 0, y: G.y0 + 38, 'text-anchor': 'middle' }, pct(view.p));
+    for (const n of [needle, head, label]) { n.style.transform = `translate(${prevNeedle ?? nx}px, 0)`; root.append(n); }
+    if (view.actual != null) {
+      const dot = svg('circle', { class: 'actualdot', cx: 0, cy: 0, r: 7 });
+      dot.style.transform = `translate(${prevNeedle ?? nx}px, ${prevDotY ?? y(view.actual)}px)`;
+      root.append(dot);
+      requestAnimationFrame(() => { dot.style.transform = `translate(${nx}px, ${y(view.actual)}px)`; });
+      prevDotY = y(view.actual);
+    }
+    requestAnimationFrame(() => { for (const n of [needle, head, label]) n.style.transform = `translate(${nx}px, 0)`; });
+    prevNeedle = nx;
+  }
+}
+let prevNeedle = null;
+let prevDotY = null;
+
+function renderMobileCurve(policy, p) {
+  const root = $('#mobileCurve'); root.replaceChildren();
+  if (!policy) return;
+  root.append(el('p', { class: 'mobile-curve-title', text: 'Mandate thresholds · probability → maximum exposure' }));
+  for (const r of thresholdRows(policy, p)) {
+    root.append(el('div', { class: 'threshold', 'data-active': String(r.active), 'data-kill': String(r.kind === 'kill') },
+      el('span', { text: r.label }), el('b', { text: money(r.usd) }), r.active ? el('small', { text: 'Current step' }) : null));
+  }
 }
 
-function stopReplay(){
-  replayMode=false;
-  clearInterval(replayTimer);
-  replayTimer=null;
-  $('#killMoment')?.classList.add('hidden');
-  $('#curveMode').textContent='LIVE POLICY';
-  $('#curveNote').textContent='The marker sits on the committed curve. Exposure is the step the program will accept, not a size the agent picks.';
-  $('#replayBtn').textContent='SIMULATION';
-  if($('#verifiedReplayBtn') && !replayTimer) $('#verifiedReplayBtn').textContent='VERIFIED REPLAY';
-  if(state) render(state);
+/* ---------------- signal ---------------- */
+function renderSignal(market, quote, policy) {
+  const q = $('#heroTitle');
+  if (market?.question) { q.textContent = market.question; q.dataset.empty = 'false'; }
+  else { q.textContent = state?.setup?.signalError ? 'No market selected yet' : 'Loading the committed market…'; q.dataset.empty = 'true'; }
+  const src = market?.kind === 'polymarket' ? 'Polymarket' : 'Kalshi via DFlow';
+  const closes = market?.endDateMs ? ` · closes ${new Date(market.endDateMs).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}` : '';
+  $('#marketMeta').textContent = `${src} · ${market?.ticker || 'YES outcome'}${closes}`;
+  const p = quote?.probability;
+  if (!sim) $('#probValue').textContent = p == null ? '' : `${(p * 100).toFixed(1)}%`;
+  document.querySelector('.prob').classList.toggle('hidden', p == null && !sim);
+  document.querySelector('.book').classList.toggle('hidden', p == null);
+  $('#bid').textContent = pct(quote?.bid); $('#ask').textContent = pct(quote?.ask);
+  $('#spread').textContent = quote?.spreadBps == null ? '—' : `${quote.spreadBps} bps`;
+  $('#depth').textContent = quote?.depthUsd == null ? 'n/a' : money(quote.depthUsd, 0);
+  $('#age').textContent = quote?.ageSec == null ? '—' : `${Math.round(quote.ageSec)}s`;
+  const bar = document.querySelector('.book-bar');
+  if (policy) bar.style.setProperty('--kill-at', `${policy.killBelowBps / 100}%`);
+  if (quote?.bid != null) {
+    $('#bookBand').style.left = `${quote.bid * 100}%`; $('#bookBand').style.width = `${Math.max(0.6, (quote.ask - quote.bid) * 100)}%`;
+    $('#bookMid').style.left = `${quote.probability * 100}%`;
+  }
+  const quality = $('#quality');
+  if (!quote) { quality.dataset.ok = 'false'; quality.textContent = state?.setup?.signalError ? 'No signal configured' : 'Waiting for a quote'; }
+  else if (quote.quality) { quality.dataset.ok = 'true'; quality.textContent = 'Usable signal'; }
+  else { quality.dataset.ok = 'false'; quality.textContent = `${words(quote.qualityReason)} quote · risk increases on hold`; }
+  setRich($('#explain'), quote?.explain || (state?.setup?.signalError ? `Signal: ${state.setup.signalError}` : 'The signal is graded before it can raise exposure: it must be fresh, tight and deep.'));
 }
 
-function applyVerifiedReceipt(receipt,index,total){
-  const f=state.fuse;
-  const bps=Number(receipt.observedProbabilityBps);
-  const permitted=Number(receipt.desiredExposureAfterUsd);
-  const actual=Number(receipt.filledExposureAfterUsd);
-  const killed=permitted===0;
-  renderCurve(f,bps,killed?{killed:true,permitted:0}:undefined);
-  $('#curveMode').textContent=`VERIFIED REPLAY ${index+1}/${total}`;
-  $('#curveNote').textContent=String(receipt.reason||'RECEIPT').replaceAll('_',' ');
-  $('#probability').textContent=pct(bps/100);
-  $('#flowP').textContent=pct(bps/100);
-  $('#target').textContent=money(permitted,0);
-  $('#filled').textContent=money(actual,0);
-  $('#policyResult').textContent='PASS';
-  $('#policyResult').className='green';
-  $('#statusBadge').textContent=killed?'KILLED':'OPEN';
-  $('#statusBadge').className=`status-pill ${killed?'killed':'open'}`;
-  $('#killMoment').classList.toggle('hidden',!killed);
-  $('#rejectLine').classList.add('hidden');
-  showFeatured({
-    prob:pct(bps/100),
-    permitted:money(permitted,0),
-    requested:money(permitted,0),
-    actual:money(actual,0),
-    cap:money(f.policy.riskCapUsd,0),
-    nonce:String(receipt.sequence),
-    hash:receipt.hash,
-    hashLabel:'RECEIPT HASH',
-    tx:isSignature(receipt.txSignature)?{value:receipt.txSignature,url:explorerUrl('tx',receipt.txSignature,receipt.venueCluster)}:null,
-    verdict:'PASS',
-    raw:JSON.stringify(receipt,null,2)
-  });
+/* ---------------- decision ---------------- */
+function renderDecision(s) {
+  const f = s.fuse; const pos = s.position || {}; const q = s.quote;
+  const actual = Math.abs(Number(pos.exposureUsd || 0));
+  const minMove = Number(f.policy.minRebalanceUsd || 0);
+  let title = 'Holding'; let detail = 'Waiting for a usable quote on an armed mandate.'; let tone = 'idle';
+  if (f.status === 'KILLED') {
+    tone = actual >= 0.01 ? 'danger' : 'idle';
+    title = actual >= 0.01 ? 'Killed · close pending' : 'Killed · flat';
+    detail = actual >= 0.01 ? `The mandate is killed but ${money(actual)} is still open on the venue. A separate close must confirm.` : 'The venue reports no exposure. This mandate can never reopen.';
+  } else if (f.status === 'PROPOSED') { tone = 'warn'; title = 'Committed, not armed'; detail = 'The policy is on-chain. The operator must arm it before the worker can trade.'; }
+  else if (f.status === 'SETTLED') { title = 'Settled'; detail = 'This mandate is finished. Start a new one to trade again.'; }
+  else if (!q?.quality) { tone = 'warn'; title = 'No new risk'; detail = q ? `${words(q.qualityReason)} quote, so exposure can only stay or fall. Venue holds ${money(actual)}.` : 'No current quote, so exposure can only stay or fall.'; }
+  else if (f.desiredExposureUsd > actual + minMove) { tone = 'active'; title = 'Increase authorized'; detail = `The curve permits ${money(f.desiredExposureUsd)}. The worker is filling toward it on the venue.`; }
+  else if (f.desiredExposureUsd < actual - minMove) { tone = 'warn'; title = 'Reducing'; detail = `The venue holds ${money(actual)}, above the permitted ${money(f.desiredExposureUsd)}. A reduce-only order is due.`; }
+  else { tone = 'active'; title = 'On target'; detail = `Venue exposure ${money(actual)} matches what the curve permits.`; }
+  const box = $('#decision'); box.dataset.tone = tone;
+  $('#decisionTitle').textContent = title; $('#decisionDetail').textContent = detail;
+  $('#decisionLabel').textContent = 'Current decision · venue state';
+  $('#fuseStatus').textContent = words(f.status);
+  $('#mark').textContent = pos.markPrice ? money(pos.markPrice, 2) : '—';
+  $('#pnl').textContent = pos.unrealizedPnlUsd == null ? '—' : money(pos.unrealizedPnlUsd, 2);
+  $('#reason').textContent = words(f.lastReasonCode || 'none');
 }
 
-function startVerified(){
-  const receipts=proofState?.verifiedRun?.receipts||[];
-  if(!receipts.length || !receipts.every(r=>r?.hash && isSignature(r?.txSignature))){
-    $('#verifiedReplayBtn')?.classList.add('hidden');
-    toast('Verified replay needs receipts and transaction signatures','bad');
+/* ---------------- setup ---------------- */
+function renderSetup(s) {
+  const list = $('#checklist'); list.replaceChildren();
+  const items = s.setup?.checklist || [];
+  for (const it of items) {
+    list.append(el('li', { 'data-ok': String(it.ok) }, el('span', { class: 'mark', 'aria-hidden': 'true' }),
+      el('b', {}, el('span', { class: 'group', text: `${it.group} · ` }), document.createTextNode(it.label)),
+      setRich(el('small'), it.ok ? 'Done' : it.hint)));
+  }
+  const missing = items.filter((i) => !i.ok).length;
+  $('#setupTitle').textContent = missing ? `Not live yet · ${missing} step${missing === 1 ? '' : 's'} left` : 'Starting the live runtime';
+  $('#setupError').textContent = s.setup?.error ? `Last start attempt: ${s.setup.error}` : '';
+}
+
+/* ---------------- receipts, proof, log ---------------- */
+function renderReceipts(receipts = []) {
+  $('#receiptCount').textContent = `${receipts.length} receipt${receipts.length === 1 ? '' : 's'}`;
+  const root = $('#receipts'); root.replaceChildren();
+  if (!receipts.length) { root.append(el('li', { class: 'empty', text: 'No fills yet. A receipt appears only when the venue position actually changes.' })); return; }
+  const verified = new Set((proof?.verifiedRun?.receipts || []).map((r) => r.hash));
+  for (const r of [...receipts].reverse().slice(0, 20)) {
+    const delta = Number(r.filledExposureAfterUsd) - Number(r.actualExposureBeforeUsd);
+    const kind = /KILL|STOP|CLOSE/.test(r.reason) ? 'kill' : delta >= 0 ? 'up' : 'down';
+    const links = el('div', { class: 'links' });
+    if (isSig(r.txSignature)) links.append(txLink(r.txSignature, 'Venue fill', r.venueCluster));
+    const anchor = r.anchor?.signature || r.chain?.txs?.filter((t) => t.ix === 'record_fill').at(-1)?.signature;
+    if (isSig(anchor)) links.append(txLink(anchor, 'Anchor on Solana'));
+    const tag = verified.has(r.hash) ? el('span', { class: 'tag ok', text: 'Verified against chain' }) : r.anchor?.status === 'ANCHORED' ? el('span', { class: 'tag', text: 'Anchored · run the verifier' }) : el('span', { class: 'tag warn', text: 'Not anchored' });
+    root.append(el('li', { class: 'receipt' },
+      el('div', { class: 'receipt-head' }, el('b', { text: words(r.reason) }), el('span', { class: `delta ${kind}`, text: `${delta >= 0 ? '+' : '−'}${money(Math.abs(delta))}` })),
+      el('small', { text: `At ${(Number(r.observedProbabilityBps) / 100).toFixed(1)}% · permitted ${money(r.desiredExposureAfterUsd)} · venue ${money(r.filledExposureAfterUsd)}` }),
+      tag, links, el('code', { text: short(r.hash) })));
+  }
+}
+
+const PROOF_ROWS = [
+  ['program', 'Fuse program', 'account'],
+  ['fuseAccount', 'Mandate account (policy hash)', 'account'],
+  ['create', 'Mandate committed', 'tx'],
+  ['arm', 'Armed by owner', 'tx'],
+  ['target', 'Target authorized on-chain', 'tx'],
+  ['venueOpen', 'Venue open fill', 'tx'],
+  ['venueResize', 'Venue resize fill', 'tx'],
+  ['kill', 'Kill committed on-chain', 'tx'],
+  ['venueClose', 'Venue close fill', 'tx']
+];
+function renderProof() {
+  const root = $('#proof'); root.replaceChildren();
+  const live = state?.mode !== 'setup';
+  for (const [k, label, kind] of PROOF_ROWS) {
+    const item = k === 'program' || k === 'fuseAccount' ? proof?.[k] : proof?.transactions?.[k];
+    const value = item?.value;
+    const ok = Boolean(value && (kind === 'account' || isSig(value)));
+    const tail = ok ? el('a', { class: 'val', href: kind === 'tx' ? explorer('tx', value, k.startsWith('venue') ? state?.position?.cluster : null) : explorer('account', value), target: '_blank', rel: 'noreferrer', text: short(value) })
+      : el('span', { class: 'val', text: !live ? 'After go-live' : proof ? 'Not yet' : 'Loading…' });
+    root.append(el('li', { 'data-ok': String(ok) }, el('span', { class: 'dot', 'aria-hidden': 'true' }), el('span', { class: 'what', text: label }), tail));
+  }
+}
+
+function renderLog(decisions = []) {
+  const root = $('#log'); root.replaceChildren();
+  if (!decisions.length) { root.append(el('li', { class: 'empty', text: state?.mode === 'setup' ? 'The worker starts logging once the runtime is live.' : 'No worker decisions on this mandate yet.' })); return; }
+  for (const d of [...decisions].reverse().slice(0, 12)) {
+    const when = new Date(d.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const li = el('li', {},
+      el('div', { class: 'log-head' }, el('b', { text: words(d.outcome || 'unknown') }), el('small', { text: `${when}${d.repeatCount > 1 ? ` · ×${d.repeatCount}` : ''}` })),
+      el('span', { text: d.explanation || 'No new execution.' }),
+      el('small', { text: `${words(d.reason || 'none')} · target ${money(d.targetUsd)} · venue ${d.venueExposureUsd == null ? 'unavailable' : money(d.venueExposureUsd)}` }));
+    if (isSig(d.venueSignature)) li.append(txLink(d.venueSignature, 'Venue transaction', state?.position?.cluster));
+    root.append(li);
+  }
+}
+
+/* ---------- Market intelligence: DFlow input vs Kalshi public reference ---------- */
+function renderMarketContext() {
+  const synthetic=isSyntheticState(state);
+  if(sim || synthetic) {
+    $('#marketDflowPrice').textContent='ILLUSTRATIVE';
+    $('#marketKalshiPrice').textContent='NOT REQUESTED';
+    $('#marketDflowDetail').textContent='This is a synthetic UI fixture, not a DFlow price.';
+    $('#marketKalshiDetail').textContent='No official Kalshi data belongs to this example.';
+    $('#marketComparison').textContent='SIMULATION ONLY · NOT EXECUTED · no cross-market claim';
+    $('#marketComparison').dataset.status='UNAVAILABLE';
+    $('#marketReferenceTime').textContent='Reference comparison is disabled during the guided demonstration.';
     return;
   }
-  replayMode=true;
-  let i=0;
-  $('#verifiedReplayBtn').textContent='REPLAYING…';
-  applyVerifiedReceipt(receipts[0],0,receipts.length);
-  clearInterval(replayTimer);
-  replayTimer=setInterval(()=>{
-    i+=1;
-    if(i>=receipts.length){clearInterval(replayTimer);replayTimer=null;$('#verifiedReplayBtn').textContent='VERIFIED REPLAY';return;}
-    applyVerifiedReceipt(receipts[i],i,receipts.length);
-  },1600);
+  const ctx=marketContext;
+  const d=ctx?.dflow;
+  const k=ctx?.kalshi;
+  $('#marketDflowPrice').textContent=d?.quote != null ? pct(d.quote) : '—';
+  $('#marketDflowDetail').textContent=d ? `${d.market||'No ticker'} · ${d.usable?'usable for policy':'policy increases held'} · ${d.quoteAgeSec==null?'age unknown':`age ${Math.round(d.quoteAgeSec)}s`}` : 'No DFlow observation received';
+  const observed=k?.status==='OBSERVED' && k?.orderbook?.status==='OBSERVED';
+  $('#marketKalshiPrice').textContent=observed ? pct(k.orderbook.midpoint) : 'UNAVAILABLE';
+  $('#marketKalshiDetail').textContent=observed ? `${k.ticker} · ${k.marketStatus} · ${k.orderbook.spreadBps} bps spread` : (k?.reason || k?.status || 'Waiting for public Kalshi reference');
+  const comparison=k?.comparison;
+  const status=comparison?.status || 'UNAVAILABLE';
+  $('#marketComparison').dataset.status=status;
+  $('#marketComparison').textContent=status==='SIMILAR' ? `Reference prices are within ${comparison.differenceBps} bps of each other. This does not verify Solana execution.`
+    : status==='DIVERGENT' ? `Price divergence: ${comparison.differenceBps} bps. Verify market alignment, latency and liquidity manually; Kalshi never overrides DFlow.`
+    : `Reference comparison ${words(status)}. DFlow alone supplies the policy signal; no second oracle is being claimed.`;
+  $('#marketReferenceTime').textContent=k?.quoteTime ? `Kalshi observed ${new Date(k.quoteTime).toLocaleString()} · cached REST reference, never order entry` : 'Kalshi API requires no credentials for this read-only reference.';
 }
 
-function startReplay(){
-  if(!state?.fuse?.policy){toast('Waiting for the committed policy','bad');return;}
-  replayMode=true;
-  let i=0;
-  $('#replayBtn').textContent='SIMULATING…';
-  applyReplayStep(REPLAY_STEPS[0],0);
-  clearInterval(replayTimer);
-  replayTimer=setInterval(()=>{
-    i+=1;
-    if(i>=REPLAY_STEPS.length){clearInterval(replayTimer);replayTimer=null;$('#replayBtn').textContent='SIMULATION';return;}
-    applyReplayStep(REPLAY_STEPS[i],i);
-  },1600);
+/* ---------- Current-mandate decision journal; no invented execution proof ---------- */
+function renderJournal() {
+  const synthetic=isSyntheticState(state);
+  const data=journalData;
+  const summary=data?.summary || {};
+  const receipts=data?.entries?.filter(e=>e.kind==='VENUE_RECEIPT') || [];
+  const verified=new Set((proof?.verifiedRun?.receipts||[]).map(r=>r.hash));
+  const verifiedCount=receipts.filter(r=>verified.has(r.hash)).length;
+  $('#journalDecisions').textContent=data ? summary.decisions : '—';
+  $('#journalRisk').textContent=data ? summary.riskHolds : '—';
+  $('#journalFills').textContent=data ? summary.capturedFills : '—';
+  $('#journalVerified').textContent=data ? verifiedCount : '—';
+  const list=$('#journalEvents'); list.replaceChildren();
+  if (!data) { list.append(el('li',{class:'empty',text:'No decision journal available; the runtime may be in setup mode.'})); return; }
+  const items=(data.entries||[]).filter(e=>journalFilter==='ALL'||e.category===journalFilter).slice(0,18);
+  if(!items.length) { list.append(el('li',{class:'empty',text:'No matching events for this mandate.'})); return; }
+  for(const ev of items) {
+    const independent=verified.has(ev.hash);
+    const evidence=synthetic?'SYNTHETIC_FIXTURE':ev.kind==='VENUE_RECEIPT' && independent ? 'INDEPENDENTLY_VERIFIED' : ev.evidence;
+    const li=el('li',{'data-category':ev.category},
+      el('div',{class:'journal-head'},el('b',{text:words(ev.title)}),el('small',{text:ev.at>0?new Date(ev.at).toLocaleString():'Timestamp not available'})),
+      el('div',{class:'journal-detail',text:ev.detail}),
+      el('div',{class:'journal-evidence','data-evidence':evidence,text:words(evidence) + (ev.repeatCount>1?` · ${ev.repeatCount} repeated observations`:'' )}));
+    if (isSig(ev.signature) && !synthetic) li.append(txLink(ev.signature,'View venue transaction',state?.position?.cluster));
+    list.append(li);
+  }
 }
 
-let refreshing=null;
-async function refresh(){
-  if(refreshing) return refreshing;
-  refreshing=(async()=>{
-    try{
-      const s=await api('/api/state');state=s;
-      $('#connectionBanner').classList.add('hidden');
-      if(!replayMode)render(s);
+/* ---------------- top-level render ---------------- */
+function pillFor(s) {
+  if (s.mode === 'setup') return ['setup', 'Setup mode'];
+  const st = s.fuse?.status;
+  if (st === 'KILLED') return ['killed', 'Killed'];
+  if (st === 'PROPOSED') return ['armed', 'Committed'];
+  if (['ARMED', 'OPEN', 'REDUCING'].includes(st)) return ['live', st === 'ARMED' ? 'Armed' : 'Live'];
+  return ['idle', words(st || 'unknown')];
+}
+
+function render(s) {
+  state = s;
+  const setup = s.mode === 'setup';
+  const policy = setup ? s.policy : s.fuse?.policy;
+  const [tone, label] = pillFor(s);
+  $('#statusPill').dataset.tone = tone; $('#statusPill').textContent = label;
+  $('#netLabel').textContent = `${s.integrity?.network || 'devnet'} · ${s.integrity?.perpAdapter === 'velocity' ? 'Velocity' : s.integrity?.perpAdapter || ''}`;
+  $('#curveCaption').textContent = 'Committed exposure curve';
+  renderSignal(s.market, s.quote, policy);
+  $('#setup').classList.toggle('hidden', !setup);
+  $('#decision').classList.toggle('hidden', setup && !sim);
+  if (setup) renderSetup(s); else renderDecision(s);
+  if (policy) {
+    $('#cap').textContent = money(policy.riskCapUsd);
+    $('#killLine').textContent = `${policy.killBelowBps / 100}%`;
+  }
+  if (!sim) {
+    const pBps = s.quote ? Math.round(s.quote.probability * 10000) : setup ? null : (s.fuse?.lastProbabilityBps || null);
+    const killed = !setup && s.fuse?.status === 'KILLED';
+    const permitted = setup ? s.preview?.permittedUsd ?? null : killed ? 0 : s.fuse.desiredExposureUsd;
+    const actual = setup ? null : Number(s.position?.exposureUsd || 0);
+    $('#permitted').textContent = money(permitted);
+    $('#actual').textContent = setup ? 'Not live' : money(actual);
+    $('#actual').dataset.muted = String(setup);
+    $('#curveMode').textContent = setup ? 'Preview · nothing executes' : 'Live';
+    const ask = lastAsk && Date.now() - lastAsk.at < 20000 ? lastAsk : null;
+    drawCurve(policy, { p: pBps == null ? null : pBps / 10000, permitted, actual, killed,
+      requested: ask && !ask.ok ? ask.usd : null, refused: Boolean(ask && !ask.ok), allowedAsk: ask?.ok ? ask.usd : null });
+    renderMobileCurve(policy, pBps == null ? null : pBps / 10000);
+  }
+  renderReceipts(s.receipts || []);
+  renderLog(s.decisions || []);
+  renderProof();
+  renderMarketContext();
+  renderJournal();
+  const va = s.integrity?.venueAuthority;
+  if (va?.limitation) $('#boundaryCopy').textContent = va.limitation;
+  $('#build').textContent = `Build ${s.integrity?.buildTag || 'dev'} · ${short(s.integrity?.buildSha)} · policy ${short(setup ? s.policyHash : s.fuse?.policyHash)}`;
+  renderControls();
+  $('#replayBtn').classList.toggle('hidden', !(proof?.verifiedRun?.receipts?.length));
+  applyPresentationMode(s);
+}
+
+function renderControls() {
+  const op = Boolean(token());
+  $('#operatorBtn').textContent = op ? 'Operator · sign out' : 'Operator sign-in';
+  $('#controls').classList.toggle('hidden', !op || Boolean(sim) || isSyntheticState(state));
+  if (!op || !state) return;
+  const st = state.fuse?.status; const live = state.mode !== 'setup';
+  const open = Math.abs(Number(state.position?.exposureUsd || 0)) >= 0.01;
+  $('#armBtn').disabled = !live || st !== 'PROPOSED';
+  $('#tickBtn').disabled = !live || !['ARMED', 'OPEN', 'REDUCING'].includes(st);
+  $('#killBtn').disabled = !live || ['PROPOSED', 'KILLED', 'SETTLED'].includes(st);
+  $('#settleBtn').disabled = !live || !['KILLED', 'ARMED', 'OPEN', 'REDUCING'].includes(st) || open;
+  $('#newBtn').disabled = !live || !['KILLED', 'SETTLED'].includes(st);
+}
+
+/* ---------------- guided walkthrough and verified replay ---------------- */
+const guideButtons = DEMO_LABELS.map((label, i) => {
+  const button = el('button', { class: 'stage-button', type: 'button', text: `${i + 1}. ${label}` });
+  button.addEventListener('click', () => {
+    if (!sim || sim.kind !== 'guided') sim = { kind: 'guided', index: i };
+    else sim.index = i;
+    if (state) render(state);
+  });
+  $('#demoStages').append(button);
+  return button;
+});
+
+function applyPresentationMode(s) {
+  const preview = isSyntheticState(s);
+  const guided = sim?.kind === 'guided';
+  const replay = sim?.kind === 'replay';
+  document.body.dataset.presentation = guided ? 'simulation' : replay ? 'replay' : preview ? 'synthetic' : 'live';
+  $('#presentationBar').classList.toggle('hidden', !guided && !replay && !preview);
+  $('#exitPresentation').classList.toggle('hidden', !guided && !replay);
+  $('#demoGuide').classList.toggle('hidden', !guided);
+  $('#simBtn').textContent = guided ? 'Exit simulation' : 'Try a guided simulation';
+  $('#replayBtn').textContent = replay ? 'Exit replay' : 'Replay verified fills';
+  if (guided) {
+    const snap = demoSnapshot(s.mode === 'setup' ? s.policy : s.fuse?.policy, sim.index);
+    $('#statusPill').dataset.tone = 'sim'; $('#statusPill').textContent = 'SIMULATION · NOT EXECUTED';
+    $('#netLabel').textContent = 'Illustrative values · no network actions';
+    $('#presentationTitle').textContent = 'Illustrative simulation · no orders or Solana transactions';
+    $('#presentationHint').textContent = `${snap.index + 1} of ${DEMO_LABELS.length}: ${snap.label}`;
+    $('#demoCounter').textContent = `Step ${snap.index + 1} of ${DEMO_LABELS.length}`;
+    $('#demoPrev').disabled = snap.index === 0;
+    $('#demoNext').disabled = snap.index === DEMO_LABELS.length - 1;
+    $('#demoNext').textContent = snap.index === DEMO_LABELS.length - 1 ? 'Complete · exit above' : 'Next step';
+    guideButtons.forEach((b, i) => { b.dataset.selected = String(i === sim.index); b.setAttribute('aria-pressed', String(i === sim.index)); });
+    showSimStep(s.mode === 'setup' ? s.policy : s.fuse?.policy, snap);
+    return;
+  }
+  if (replay) {
+    const r = proof?.verifiedRun?.receipts?.[sim.index];
+    $('#statusPill').dataset.tone = 'sim'; $('#statusPill').textContent = 'VERIFIED RECEIPT REPLAY';
+    $('#netLabel').textContent = 'Historical data · not a live order';
+    $('#presentationTitle').textContent = 'Verified historical receipt replay';
+    $('#presentationHint').textContent = 'These are historical verifier records, not a new execution.';
+    if (r) showReceiptStep(s.mode === 'setup' ? s.policy : s.fuse?.policy, r, sim.index, proof.verifiedRun.receipts.length);
+    return;
+  }
+  $('.signal').classList.remove('simulating');
+  if (preview) {
+    $('#statusPill').dataset.tone = 'sim'; $('#statusPill').textContent = 'SYNTHETIC UI PREVIEW';
+    $('#netLabel').textContent = 'Fixture only · no venue execution';
+    $('#presentationTitle').textContent = 'Synthetic development preview';
+    $('#presentationHint').textContent = 'All prices and venue exposures are fixtures; not real DFlow or Velocity data.';
+    $('#curveMode').textContent = 'Synthetic fixture · not live';
+    $('#curveCaption').textContent = 'Example exposure curve · not committed';
+    $('#receiptsTitle').firstChild.textContent = 'Synthetic sample receipts ';
+    $('#proofTitle').firstChild.textContent = 'No published on-chain proof ';
+    $('#decisionLabel').textContent = 'Synthetic decision · fixture only';
+    $('#decisionDetail').textContent = `Synthetic fixture, not a verified venue position. ${$('#decisionDetail').textContent}`;
+  } else {
+    $('#decisionLabel').textContent = 'Current decision · venue state';
+    $('#receiptsTitle').firstChild.textContent = 'Execution receipts ';
+    $('#proofTitle').firstChild.textContent = 'On-chain proof ';
+  }
+}
+
+function showSimStep(policy, snap) {
+  if (!policy) return;
+  const { probability: p, permitted, requested, refused, killed } = snap;
+  $('#probValue').textContent = `${(p * 100).toFixed(1)}%`;
+  $('.prob').classList.remove('hidden');
+  $('#marketMeta').textContent = 'Illustrative probability · no live market quote';
+  $('#permitted').textContent = money(permitted);
+  $('#actual').textContent = 'NOT EXECUTED'; $('#actual').dataset.muted = 'true';
+  $('#curveMode').textContent = `SIMULATION · step ${snap.index + 1}/4`;
+  $('#curveCaption').textContent = 'Illustrative mandate curve';
+  $('#simNote').textContent = snap.label;
+  $('.signal').classList.add('simulating');
+  $('#explain').textContent = `Synthetic example. ${snap.detail}`;
+  $('#decision').classList.remove('hidden'); $('#decision').dataset.tone = refused ? 'danger' : killed ? 'warn' : 'active';
+  $('#decisionLabel').textContent = 'Illustrative decision · not executed';
+  $('#decisionTitle').textContent = snap.title;
+  $('#decisionDetail').textContent = snap.detail;
+  $('#fuseStatus').textContent = killed ? 'KILLED (simulated)' : 'ACTIVE (simulated)';
+  $('#mark').textContent = '—'; $('#pnl').textContent = '—'; $('#reason').textContent = snap.reason.replaceAll('_', ' ');
+  drawCurve(policy, { p, permitted, actual: null, killed, requested: requested > 0 ? requested : null, refused, allowedAsk: !refused && !killed && requested > 0 ? requested : null });
+  renderMobileCurve(policy, p);
+}
+
+function showReceiptStep(policy, r, i, n) {
+  if (!policy) return;
+  const p = Number(r.observedProbabilityBps) / 10000;
+  const permitted = Number(r.desiredExposureAfterUsd);
+  const actual = Number(r.filledExposureAfterUsd);
+  $('#probValue').textContent = `${(p * 100).toFixed(1)}%`;
+  $('#marketMeta').textContent = 'Historical verified receipt · not a live market quote';
+  $('#permitted').textContent = money(permitted); $('#actual').textContent = money(actual);
+  $('#actual').dataset.muted = 'false';
+  $('#curveMode').textContent = `REPLAY · receipt ${i + 1}/${n}`;
+  $('#curveCaption').textContent = 'Historical mandate curve';
+  $('#simNote').textContent = `${words(r.reason)} · receipt ${short(r.hash)}`;
+  $('.signal').classList.add('simulating');
+  $('#explain').textContent = 'Historical fill from the independent verifier; playing this view does not send any order.';
+  $('#decision').classList.remove('hidden'); $('#decision').dataset.tone = 'active';
+  $('#decisionLabel').textContent = 'Historical receipt · verified replay';
+  $('#decisionTitle').textContent = `${words(r.reason)} · historical`;
+  $('#decisionDetail').textContent = `Verified record ${i + 1} of ${n}. Submitted ${money(permitted)}, venue recorded ${money(actual)}. No trade is being sent now.`;
+  $('#fuseStatus').textContent = 'Historical'; $('#mark').textContent = '—'; $('#pnl').textContent = '—'; $('#reason').textContent = words(r.reason);
+  drawCurve(policy, { p, permitted, actual, killed: permitted === 0 && /KILL|STOP/.test(r.reason) });
+  renderMobileCurve(policy, p);
+}
+
+function stopSim() {
+  if (sim?.timer) clearInterval(sim.timer);
+  sim = null; prevNeedle = null; prevDotY = null;
+  $('#simNote').textContent = '';
+  $('#curveCaption').textContent = 'Committed exposure curve';
+  if (state) render(state);
+}
+function startGuidedDemo() {
+  if (sim?.timer) clearInterval(sim.timer);
+  sim = { kind: 'guided', index: 0 };
+  if (state) render(state);
+}
+function startVerifiedReplay() {
+  if (sim?.kind === 'replay') { stopSim(); return; }
+  if (sim?.timer) clearInterval(sim.timer);
+  const receipts = proof?.verifiedRun?.receipts || [];
+  if (!receipts.length) return;
+  sim = { kind: 'replay', index: 0 };
+  if (state) render(state);
+  sim.timer = setInterval(() => {
+    if (!sim || sim.kind !== 'replay') return;
+    if (sim.index >= receipts.length - 1) { clearInterval(sim.timer); sim.timer = null; return; }
+    sim.index += 1;
+    if (state) render(state);
+  }, reduceMotion ? 3500 : 2500);
+}
+
+/* ---------------- data loop ---------------- */
+let inflight = null;
+async function refresh() {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const s = await api('api/state');
+      $('#banner').classList.add('hidden');
+      render(s);
       return s;
-    }catch(e){
-      $('#connectionBanner').classList.remove('hidden');
-      $('#lastSync').textContent='Backend unavailable · displayed state may be old';
+    } catch (e) {
+      $('#banner').classList.remove('hidden');
+      if (!state) { $('#statusPill').dataset.tone = 'idle'; $('#statusPill').textContent = 'Offline'; }
       throw e;
-    }finally{refreshing=null;}
+    } finally { inflight = null; }
   })();
-  return refreshing;
+  return inflight;
 }
-async function mutate(path,body,{quiet=false}={}){try{const out=await api(path,body);await refresh();if(!quiet)toast('State updated');return out}catch(e){await refresh().catch(()=>{});toast(e.message,'bad');throw e}}
-
-function renderMarket(m){
-  if(!m) return;
-  $('#marketQuestion').textContent=m.question||m.id;
-  $('#outcomeLabel').textContent=String(m.outcome||'YES').toUpperCase();
-  const link=$('#marketLink'); link.textContent=`${state?.quote?.quality?'LIVE':'UNUSABLE'} · ${String(m.kind||'').toUpperCase()}`;
-  if(m.url) link.href=m.url; else link.removeAttribute('href');
+async function loadMarketContext() {
+  try { marketContext=await api('api/market/context'); }
+  catch { marketContext=null; }
+  if(state) renderMarketContext();
 }
-
-async function tick(){const out=await mutate('/api/tick',{}, {quiet:true});if(out?.reason==='AWAITING_CONFIRMATION')toast(`Signal confirmed ${out.confirmationCount}/${state.fuse.policy.confirmationCount}`);else toast(out?.executed?'Position reconciled':'Observation accepted');return out}
-
-async function runVerifier(){
-  try{
-    const v=await api('/api/verify',{}); const sec=$('#verifySection'), panel=$('#verifyPanel');
-    $('#verifyHeadline').textContent=v.summary; panel.innerHTML='';
-    const esc=(t)=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-    v.checks.forEach(c=>{const d=document.createElement('div');d.className=`verify-check ${c.ok?'ok':'bad'}`;d.innerHTML=`<i>${c.ok?'✓':'✕'}</i><b>${esc(c.name)}</b><small>${esc(String(c.actual).slice(0,60))}</small>`;panel.appendChild(d)});
-    // Only a fill that passed every chain check is labelled Verified.
-    (v.fills||[]).forEach(fl=>{const d=document.createElement('div');const ok=fl.status==='VERIFIED';d.className=`verify-check ${ok?'ok':'bad'}`;
-      d.innerHTML=`<i>${ok?'✓':'!'}</i><b>${ok?'Verified':'Unverified'} · ${esc(fl.reason.replaceAll('_',' '))}</b><small>${money(fl.positionUsd)} · residual ${money(fl.residualUsd)} · ${esc(fl.fuseStatus)} · ${new Date(fl.timestampMs).toLocaleTimeString()}</small>${isSignature(fl.txSignature)?`<a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.txSignature,fl.venueCluster)}">venue tx</a>`:''}${isSignature(fl.anchorSignature)?` <a target="_blank" rel="noreferrer" href="${explorerUrl('tx',fl.anchorSignature)}">anchor tx</a>`:''}${fl.problems.length?`<small>${esc(fl.problems.join('; '))}</small>`:''}`;panel.appendChild(d)});
-    const ok=v.status==='VERIFIED';
-    sec.classList.remove('hidden'); sec.scrollIntoView({behavior:'smooth',block:'center'}); toast(v.summary,ok?'good':v.status==='NO_EXECUTION'?'neutral':'bad'); return v;
-  }catch(e){toast(e.message,'bad');throw e}
+async function loadJournal() {
+  try { journalData=await api('api/journal'); }
+  catch { journalData=null; }
+  if(state) renderJournal();
+}
+async function loadProof() {
+  try { proof = await api('api/proof'); } catch { proof = null; }
+  if (state) render(state);
+}
+async function act(path, done) {
+  try { const out = await api(path, {}); await refresh(); await loadProof(); toast(done(out)); return out; }
+  catch (e) { await refresh().catch(() => {}); toast(e.message, true); }
 }
 
-async function operatorLogin(){
-  if(operatorToken()){setOperatorToken('');await refresh();return toast('Operator signed out');}
-  $('#operatorError').classList.add('hidden');
-  $('#operatorDialog').showModal();
-  $('#operatorTokenInput').focus();
+async function runVerifier() {
+  const btn = $('#verifyBtn'); btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const v = await api('api/verify', {});
+    $('#verify').classList.remove('hidden');
+    $('#verifyHeadline').textContent = v.summary;
+    const list = $('#verifyChecks'); list.replaceChildren();
+    for (const c of v.checks || []) list.append(el('li', { 'data-ok': String(c.ok) }, el('span', {}, document.createTextNode(c.name), el('small', { text: String(c.actual ?? '').slice(0, 90) }))));
+    for (const f of v.fills || []) list.append(el('li', { 'data-ok': String(f.status === 'VERIFIED') }, el('span', {}, document.createTextNode(`${f.status === 'VERIFIED' ? 'Verified' : 'Unverified'} · ${words(f.reason)} · ${money(f.positionUsd)}`), el('small', { text: f.problems?.length ? f.problems.join('; ') : `residual ${money(f.residualUsd)}` }))));
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = 'Run verifier'; }
 }
 
-$('#operatorForm').onsubmit=async(e)=>{
-  e.preventDefault();
-  const input=$('#operatorTokenInput'), error=$('#operatorError');
-  setOperatorToken(input.value.trim());
-  try{await api('/api/auth',{});input.value='';$('#operatorDialog').close();await refresh();toast('Operator signed in');}
-  catch(e){setOperatorToken('');error.textContent=e.message;error.classList.remove('hidden');}
+/* ---------------- be the agent ---------------- */
+let lastAsk = null;
+const ASK_REASONS = {
+  MANDATE_NOT_ACTIVE: () => 'the mandate is not armed',
+  MANDATE_EXPIRED: () => 'the mandate has expired',
+  INVALID_TARGET: () => 'ask in whole dollars, zero or more',
+  UNTRUSTED_OR_STALE_QUOTE: () => 'the signal is not trustworthy right now, so nothing new is allowed',
+  CURVE_LIMIT_EXCEEDED: (o) => `the curve permits at most ${money(o.permittedUsd)} at this probability`,
+  RISK_CAP_EXCEEDED: () => `it is over the ${money((state?.fuse?.policy || state?.policy)?.riskCapUsd)} hard cap`,
+  PROPOSAL_BINDING_MISMATCH: () => 'it was written for a different mandate',
+  EXPIRED_OR_FUTURE_PROPOSAL: () => 'the request is too old'
 };
-$('#cancelOperator').onclick=()=>{$('#operatorTokenInput').value='';$('#operatorDialog').close()};
+async function askMandate(e) {
+  e.preventDefault();
+  if (sim) stopSim();
+  const usd = Number($('#askUsd').value);
+  const out = $('#askResult');
+  out.dataset.verdict = ''; out.textContent = 'Asking…';
+  try {
+    const r = await api(`api/agent/check?targetUsd=${encodeURIComponent($('#askUsd').value)}`);
+    const ok = r.verdict === 'ALLOW_AS_PROPOSAL_ONLY';
+    lastAsk = { usd, ok, at: Date.now() };
+    out.dataset.verdict = ok ? 'allow' : 'refuse';
+    out.replaceChildren(el('b', { text: ok ? `Allowed: ${money(usd)}.` : `Refused: ${money(usd)}.` }), document.createTextNode(' '),
+      document.createTextNode(ok ? `Inside the curve${r.preview ? ' (preview: no mandate is armed yet)' : ''}. In a live run this target still has to pass the Fuse program on-chain before any order.`
+        : `${(r.reasons || []).map((k) => (ASK_REASONS[k] || (() => words(k)))(r)).join('; ')}.`.replace(/^./, (c) => c.toUpperCase())));
+    if (state) render(state);
+  } catch (err) { out.dataset.verdict = 'refuse'; out.textContent = err.message; }
+}
+$('#askForm').addEventListener('submit', askMandate);
 
-$('#tickBtn').onclick=()=>tick();
-$('#armBtn').onclick=()=>mutate('/api/arm',{});
-$('#emergencyKillBtn').onclick=()=>mutate('/api/kill',{}).then(()=>toast('Kill requested. Confirm the chain and venue close.'));
-$('#settleBtn').onclick=()=>mutate('/api/settle',{}).then(()=>toast('Fuse settled'));
-$('#newFuseBtn').onclick=async()=>{await mutate('/api/fuse/new',{}, {quiet:true});$('#verifySection').classList.add('hidden');await loadProof();toast('New mandate created on-chain')};
-$('#operatorBtn').onclick=operatorLogin;
-$('#watchLiveBtn').onclick=()=>{stopReplay();$('#marketQuestion').scrollIntoView({behavior:'smooth',block:'center'});};
-$('#retryConnection').onclick=()=>refresh().then(()=>loadProof()).catch(e=>toast(e.message,'bad'));
-$('#replayBtn').onclick=()=>{if(replayTimer)stopReplay();else startReplay();};
-$('#verifiedReplayBtn').onclick=()=>{if(replayTimer)stopReplay();else startVerified();};
-$('#verifyBtn2').onclick=runVerifier;$('#closeVerify').onclick=()=>$('#verifySection').classList.add('hidden');
+/* ---------------- wiring ---------------- */
+$('#retry').addEventListener('click', () => refresh().then(loadProof).catch((e) => toast(e.message, true)));
+$('#refreshMarketContext').addEventListener('click', () => loadMarketContext().catch(()=>{}));
+document.querySelectorAll('.journal-filter').forEach(button=>button.addEventListener('click',()=>{
+  journalFilter=button.dataset.filter;
+  document.querySelectorAll('.journal-filter').forEach(x=>x.dataset.selected=String(x===button));
+  renderJournal();
+}));
+$('#simBtn').addEventListener('click', () => sim?.kind === 'guided' ? stopSim() : startGuidedDemo());
+$('#startWalkthrough').addEventListener('click', () => { startGuidedDemo(); $('.instrument').scrollIntoView({ behavior: reduceMotion ? 'instant' : 'smooth', block: 'start' }); });
+$('#demoPrev').addEventListener('click', () => { if (sim?.kind === 'guided' && sim.index > 0) { sim.index -= 1; render(state); } });
+$('#demoNext').addEventListener('click', () => { if (sim?.kind === 'guided' && sim.index < DEMO_LABELS.length - 1) { sim.index += 1; render(state); } });
+$('#exitPresentation').addEventListener('click', stopSim);
+$('#replayBtn').addEventListener('click', startVerifiedReplay);
+$('#verifyBtn').addEventListener('click', runVerifier);
+$('#operatorBtn').addEventListener('click', () => {
+  if (token()) { setToken(''); renderControls(); toast('Signed out'); return; }
+  $('#operatorError').classList.add('hidden'); $('#operatorDialog').showModal(); $('#tokenInput').focus();
+});
+$('#cancelOperator').addEventListener('click', () => { $('#tokenInput').value = ''; $('#operatorDialog').close(); });
+$('#operatorForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  setToken($('#tokenInput').value.trim());
+  try { await api('api/auth', {}); $('#tokenInput').value = ''; $('#operatorDialog').close(); renderControls(); toast('Signed in as operator'); }
+  catch (err) { setToken(''); $('#operatorError').textContent = err.message; $('#operatorError').classList.remove('hidden'); }
+});
 
-refresh().catch(e=>toast(e.message,'bad'));
-loadProof().catch(()=>{});
-// The server worker trades continuously; keep the dashboard in step with it.
-setInterval(()=>{if(!document.hidden)refresh().catch(()=>{});},5000);
+$('#armBtn').addEventListener('click', () => act('api/arm', () => 'Mandate armed'));
+$('#tickBtn').addEventListener('click', () => act('api/tick', (o) => (o?.reason === 'AWAITING_CONFIRMATION' ? `Signal confirmed ${o.confirmationCount}/${state.fuse.policy.confirmationCount}` : o?.executed ? 'Position reconciled' : 'Observation accepted')));
+$('#settleBtn').addEventListener('click', () => act('api/settle', () => 'Mandate settled'));
+$('#newBtn').addEventListener('click', () => act('api/fuse/new', () => 'New mandate committed on-chain'));
+$('#killBtn').addEventListener('click', () => { if (confirm('Kill this mandate? It commits a zero target on-chain and sends a close to the venue. It cannot be undone.')) act('api/kill', () => 'Kill committed. Watch for the venue close.'); });
+
+refresh().catch(() => {});
+loadProof();
+loadJournal();
+loadMarketContext();
+setInterval(() => { if (!document.hidden && !sim) refresh().catch(() => {}); }, 5000);
+setInterval(() => { if (!document.hidden) loadProof(); }, 30000);
+
+setInterval(()=>{if(!document.hidden) loadMarketContext();},60000);
+setInterval(()=>{if(!document.hidden) loadJournal();},10000);

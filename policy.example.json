@@ -33,6 +33,6 @@
   "maxSpreadBps": 300,
   "minTopDepthUsd": 50,
   "expiryTs": 1893456000,
-  "venue": "DRIFT",
+  "venue": "VELOCITY",
   "marketId": "SOL-PERP"
 }
