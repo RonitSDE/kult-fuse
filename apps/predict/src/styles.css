@@ -53,3 +53,23 @@
   .lifecycle-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lifecycle-steps li { min-height: 2.5rem; }
 }
+
+/* wallet picker: Phantom / Solflare / Backpack or the in-browser test wallet */
+.wallet-menu{position:relative}
+.wallet-panel{position:absolute;right:0;top:calc(100% + 10px);z-index:30;width:min(320px,calc(100vw - 32px));background:#11181b;border:1px solid #2c373a;border-radius:14px;padding:12px;display:grid;gap:8px;box-shadow:0 24px 60px -20px #000c,0 0 0 1px #baff6610;animation:walletIn 160ms cubic-bezier(.2,.8,.2,1)}
+.wallet-panel[hidden]{display:none}
+@keyframes walletIn{from{opacity:0;transform:translateY(-6px)}}
+.wallet-panel-title{font-size:10px;font-weight:850;letter-spacing:1.1px;color:#9da8a5;text-transform:uppercase;margin:2px 4px 2px}
+.wallet-options{display:grid;gap:6px}
+.wallet-option{display:flex;gap:12px;align-items:center;text-align:left;width:100%;background:#182125;border:1px solid #2a3437;border-radius:10px;padding:10px 12px;color:#e9f0e9;cursor:pointer;transition:border-color 160ms,background 160ms,transform 120ms}
+.wallet-option:hover{border-color:#baff66;background:#1c272b}
+.wallet-option:active{transform:scale(.985)}
+.wallet-option[data-on="true"]{border-color:#baff66;box-shadow:inset 3px 0 0 #baff66}
+.wallet-option b{display:block;font-size:13px}
+.wallet-option small{display:block;font-size:11px;color:#8d9996;margin-top:2px}
+.wallet-ic{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:#baff66;color:#0b1013;font-weight:900;font-size:14px}
+.wallet-disconnect{background:none;border:1px solid #4a2b2b;color:#ff9c8f;border-radius:10px;padding:9px 12px;font-size:12px;font-weight:750;cursor:pointer}
+.wallet-disconnect:hover{border-color:#ff9c8f}
+.wallet-panel-note{font-size:11px;line-height:1.5;color:#8d9996;margin:2px 4px 0}
+.wallet-panel-note b{color:#baff66}
+@media(max-width:700px){.wallet-panel{position:fixed;left:16px;right:16px;top:74px;width:auto}}

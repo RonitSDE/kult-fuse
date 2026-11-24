@@ -5,7 +5,7 @@ import { Connection, PublicKey, Transaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { assertDevnet } from '../../../src/predict/network.mjs';
 import { getWallet } from './wallet.js';
-import { AnchorProvider, Wallet } from '@anchor-lang/core';
+import { AnchorProvider } from '@anchor-lang/core';
 import { PmAmmClient } from '@pm-amm/sdk';
 import { i80f48ToNumber, priceFromReserves, estimateSwapOutput } from '@pm-amm/sdk/math';
 import { SWAP_FEE_BPS } from '@pm-amm/sdk';
@@ -23,7 +23,7 @@ export const connection=new Connection(rpcUrl, {
  fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(9000) })
 });
 const programId=new PublicKey(PROGRAM), mint=new PublicKey(MINT);
-export { ensureWallet, getWallet, hasLegacyWallet } from './wallet.js';
+export { ensureWallet, getWallet, hasLegacyWallet, availableWallets, connectWallet, disconnectWallet, restoreWallet, onWalletChange } from './wallet.js';
 let chainCheck;
 export function requireDevnet() {
   chainCheck ??= assertDevnet(connection).finally(() => { chainCheck = null; });
@@ -31,7 +31,8 @@ export function requireDevnet() {
 }
 export function browserSigner() {
  const wallet=getWallet();if(!wallet)throw Error('Create a devnet wallet first');
- const provider=new AnchorProvider(connection,new Wallet(wallet),{commitment:'confirmed',preflightCommitment:'confirmed'});
+ // wallet is either the browser test keypair or a connected extension; both implement Anchor's Wallet shape.
+ const provider=new AnchorProvider(connection,wallet,{commitment:'confirmed',preflightCommitment:'confirmed'});
  return {wallet,client:PmAmmClient.fromProvider(provider,programId,mint)};
 }
 const readonlyClient=PmAmmClient.readOnly(connection,programId,mint);
@@ -131,9 +132,11 @@ export async function buyPrediction(market, side, amountRaw, minOutRaw, { before
   }, side === 'yes' ? 'usdcToYes' : 'usdcToNo', amountRaw, minOutRaw, memo);
   beforeSend();
   const tx = new Transaction({ feePayer: wallet.publicKey, blockhash, lastValidBlockHeight }).add(...ixs);
-  tx.sign(wallet);
-  const raw = tx.serialize();
-  const signature = bs58.encode(tx.signature);
+  const signed = await wallet.signTransaction(tx);
+  if (!signed?.signature) throw new Error('Wallet did not sign the trade');
+  // An extension may only add compute-budget instructions; anything else fails the server's attestation check.
+  const raw = signed.serialize();
+  const signature = bs58.encode(signed.signature);
   onSigned(signature, lastValidBlockHeight);
   await connection.sendRawTransaction(raw, { preflightCommitment: 'confirmed', maxRetries: 2 });
   return signature;

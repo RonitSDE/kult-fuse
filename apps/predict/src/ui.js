@@ -1,6 +1,6 @@
 import {PROGRAM_ID,DEVNET_MUSDC,evaluatePrediction} from '../../../src/predict/policy.mjs';
 import {vaultStatus,vaultOdds} from '../../../src/predict/vault.mjs';
-import {fetchMarketList,refreshMarket,exactQuote,minForBps,ensureWallet,hasLegacyWallet,getWallet,getMusdcBalance,getOutcomeBalances,connection,buyPrediction,provideLiquidity,claimWinnings,faucet,waitForConfirmation,explorer,fetchVaults,commitToVault,refundVaultCommit,claimVaultLp} from './predict-client.js';
+import {fetchMarketList,refreshMarket,exactQuote,minForBps,ensureWallet,hasLegacyWallet,getWallet,availableWallets,connectWallet,disconnectWallet,restoreWallet,onWalletChange,getMusdcBalance,getOutcomeBalances,connection,buyPrediction,provideLiquidity,claimWinnings,faucet,waitForConfirmation,explorer,fetchVaults,commitToVault,refundVaultCommit,claimVaultLp} from './predict-client.js';
 import { loadTradeSession, saveTradeSession, startTradeSession, withTradeLock } from './trade-session.js';
 const $=id=>document.getElementById(id);
 const format=(n,digits=2)=>n != null && Number.isFinite(Number(n))?Number(n).toLocaleString('en-US',{maximumFractionDigits:digits}):'—';
@@ -116,12 +116,36 @@ async function makeQuote({ quiet = false } = {}) {
 }
 
 function renderWallet() {
-  const wallet = currentWallet();
+  const w = getWallet();
+  const wallet = w?.publicKey.toBase58() || null;
+  const ext = w?.kind === 'external';
   $('restoreWalletBtn').hidden = Boolean(wallet) || !hasLegacyWallet();
   renderJournal();
-  $('walletLine').textContent = wallet ? `Test wallet ${short(wallet)} · Saved in this browser` : 'No test wallet yet';
-  $('walletBtn').textContent = wallet ? short(wallet) : 'Start with test wallet';
+  $('walletLine').textContent = !wallet ? 'No wallet connected' : ext ? `${w.label} ${short(wallet)} · Connected` : `Test wallet ${short(wallet)} · Saved in this browser`;
+  $('walletBtn').textContent = wallet ? `${ext ? w.label : 'Test'} · ${short(wallet)}` : 'Connect wallet';
   $('fundBtn').textContent = wallet ? 'Request test funds ↗' : 'Create & fund test wallet ↗';
+  $('walletDisconnect').hidden = !ext;
+  $('walletBurner').hidden = ext;
+  $('walletOptions').innerHTML = availableWallets().map(o => {
+    const on = ext && w.id === o.id;
+    return `<button class="wallet-option" type="button" role="menuitem" data-wallet="${o.id}" data-on="${on}"><span class="wallet-ic">${escapeHtml(o.label[0])}</span><span><b>${escapeHtml(o.label)}</b><small>${on ? 'Connected' : o.installed ? 'Detected' : 'Not installed · opens download'}</small></span></button>`;
+  }).join('');
+}
+
+function toggleWalletPanel(open = $('walletPanel').hidden) {
+  $('walletPanel').hidden = !open;
+  $('walletBtn').setAttribute('aria-expanded', String(open));
+  if (open) renderWallet();
+}
+
+async function chooseWallet(id) {
+  if (busy) return;
+  toggleWalletPanel(false);
+  try {
+    setStatus(`Waiting for ${id[0].toUpperCase() + id.slice(1)} approval…`);
+    const w = await connectWallet(id);
+    setStatus(`${w.label} connected: ${short(w.publicKey.toBase58())}. Make sure it is set to Devnet.`, 'ok');
+  } catch (error) { setStatus(error.message, 'error'); }
 }
 
 async function createAndFund({ restore = false } = {}) {
@@ -441,7 +465,7 @@ function events(){
  });
  $('refreshVaults').addEventListener('click',loadVaults);
  $('vaultSideYes').addEventListener('click',()=>{vaultSide='yes';renderVaultSelected();});$('vaultSideNo').addEventListener('click',()=>{vaultSide='no';renderVaultSelected();});$('vaultCommitBtn').addEventListener('click',doVaultCommit);$('vaultClaimBtn').addEventListener('click',()=>doVaultClaim(false));$('vaultRefundBtn').addEventListener('click',()=>doVaultClaim(true));
- $('walletBtn').addEventListener('click',createAndFund);$('fundBtn').addEventListener('click',createAndFund);$('restoreWalletBtn').addEventListener('click',()=>createAndFund({restore:true}));$('refreshMarkets').addEventListener('click',loadMarkets);
+ $('walletBtn').addEventListener('click',e=>{e.stopPropagation();toggleWalletPanel();});$('walletPanel').addEventListener('click',e=>{e.stopPropagation();const b=e.target.closest('[data-wallet]');if(b)chooseWallet(b.dataset.wallet);});$('walletBurner').addEventListener('click',()=>{toggleWalletPanel(false);createAndFund();});$('walletDisconnect').addEventListener('click',async()=>{toggleWalletPanel(false);await disconnectWallet();setStatus('Wallet disconnected.');});document.addEventListener('click',()=>toggleWalletPanel(false));document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleWalletPanel(false);});onWalletChange(()=>{renderWallet();renderVaultSelected();void makeQuote({quiet:true});});$('fundBtn').addEventListener('click',createAndFund);$('restoreWalletBtn').addEventListener('click',()=>createAndFund({restore:true}));$('refreshMarkets').addEventListener('click',loadMarkets);
  $('sideYes').addEventListener('click',()=>{side='yes';renderSide();makeQuote();});$('sideNo').addEventListener('click',()=>{side='no';renderSide();makeQuote();});
  for(const id of ['tradeAmount','maxSingle','maxTotal','slippage'])$(id).addEventListener('change',()=>makeQuote());
  document.querySelectorAll('[data-amount]').forEach(btn=>btn.addEventListener('click',()=>{$('tradeAmount').value=btn.dataset.amount;document.querySelectorAll('[data-amount]').forEach(x=>x.classList.toggle('chosen',x===btn));makeQuote();}));
@@ -469,7 +493,7 @@ function events(){
  $('shareBtn').addEventListener('click',async()=>{if(!selected){setStatus('Select a market first','error');return;}const url=new URL(location.href);url.searchParams.set('market',selected.marketPda);try{await navigator.clipboard.writeText(url.toString());setStatus('Direct market challenge link copied','ok')}catch{setStatus('Copy this link: '+url,'error');}});
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRefreshAt>45_000)loadMarkets()});
 }
-renderWallet();renderProgress();renderJournal();events();loadStats();loadMarkets();loadVaults();void reconcileReceipts();void loadLifecycleProof();
+renderWallet();renderProgress();renderJournal();events();void restoreWallet();loadStats();loadMarkets();loadVaults();void reconcileReceipts();void loadLifecycleProof();
 setInterval(()=>{if(!document.hidden&&!busy){loadStats();if(selected)makeQuote({ quiet: true });loadVaults();}},30_000);
 
 setInterval(() => {
