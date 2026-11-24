@@ -82,3 +82,11 @@
 .market-list::-webkit-scrollbar-thumb{background:#3a4a4a;border-radius:6px}
 .market-list::-webkit-scrollbar-thumb:hover{background:#baff66}
 @media(max-width:700px){.market-list{max-height:440px}}
+
+/* equal-height card pairs: the right card sets the height, the left list fills it and scrolls */
+@media(min-width:701px){
+  .arena-grid,.vault-layout{align-items:stretch}
+  .market-column,.vault-list-panel{display:flex;flex-direction:column;min-height:0}
+  .market-column>.market-list,.vault-list-panel>.market-list{flex:1 1 0;min-height:240px;max-height:none}
+  .market-column>.disclaimer,.vault-list-panel>.disclaimer{margin-top:auto;padding-top:14px}
+}
