@@ -13,7 +13,7 @@ let linkedMarket, lifecycleRequest = 0;
 function journal(){try{const arr=JSON.parse(localStorage.getItem(journalKey));return Array.isArray(arr)?arr:[]}catch{return []}}
 function writeJournal(entry){const items=journal();items.unshift(entry);localStorage.setItem(journalKey,JSON.stringify(items.slice(0,100)));renderJournal();}
 function setStatus(text,tone=''){const el=$('statusText');el.textContent=text;el.className='trade-status '+tone;}
-function setBusy(flag){busy=flag;for(const id of ['tradeBtn','walletBtn','fundBtn','lpBtn','claimBtn','refreshMarkets','refreshVaults','vaultCommitBtn','vaultClaimBtn','vaultRefundBtn','restoreWalletBtn','refreshQuoteBtn'])$(id).disabled=flag;renderProgress();renderVaultSelected();if(!flag)$('tradeBtn').disabled=!quote?.allowed;}
+function setBusy(flag){busy=flag;for(const id of ['tradeBtn','walletBtn','fundBtn','lpBtn','claimBtn','refreshMarkets','refreshVaults','vaultCommitBtn','vaultClaimBtn','vaultRefundBtn','restoreWalletBtn','refreshQuoteBtn'])$(id).disabled=flag;renderProgress();renderVaultSelected();if(!flag){$('tradeBtn').disabled=!quote?.allowed;void refreshBalance();}}
 function currentWallet(){try{return getWallet()?.publicKey.toBase58()||null}catch{return null}}
 function getLimits() {
   return { maxSingle: Number($('maxSingle').value), maxTotal: Number($('maxTotal').value),
@@ -22,7 +22,7 @@ function getLimits() {
 function mandate() { return loadTradeSession(currentWallet()); }
 function clearQuote() {
   quote = null;
-  for (const id of ['quoteOutput', 'quoteFee', 'quoteMinimum']) $(id).textContent = '—';
+  for (const id of ['quoteOutput', 'quoteFee', 'quoteMinimum', 'quotePayout']) $(id).textContent = '—';
   $('mandateDecision').textContent = 'Waiting for live quote';
   $('mandateDecision').className = '';
   $('tradeBtn').disabled = true;
@@ -48,13 +48,79 @@ function renderProgress() {
     : 'Approve a one-hour budget for this market.';
 }
 function renderSide(){for(const [id,val] of [['sideYes','yes'],['sideNo','no']]){$(id).classList.toggle('selected',side===val);$(id).setAttribute('aria-pressed',String(side===val));}}
+// ---------- market discovery: search, category chips, sort (all from live devnet accounts) ----------
+let marketQuery='',marketCat='all',marketSort='ending';
+const CATS=[['all','All'],['crypto','Crypto'],['stocks','Stocks'],['solana','Solana network'],['macro','Macro'],['other','Other']];
+function categoryOf(name){
+ const n=String(name||'');
+ if(/mainnet|\bslot\b|\btps\b/i.test(n))return 'solana';
+ if(/\b[A-Z]{2,5}x\b/.test(n))return 'stocks';
+ if(/\b(BTC|ETH|SOL|BNB|XRP|DOGE)\b|\$[A-Za-z]/.test(n))return 'crypto';
+ if(/\b[A-Z]{3}\/[A-Z]{3}\b|\brate\b|\bCPI\b|\bFed\b/i.test(n))return 'macro';
+ return 'other';
+}
+function relTime(endTs){
+ const s=Math.round(endTs-Date.now()/1000);if(s<=0)return 'Closed';
+ const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+ return d?`${d}d ${h}h`:h?`${h}h ${m}m`:`${Math.max(1,m)}m`;
+}
+function visibleMarkets(){
+ const q=marketQuery.trim().toLowerCase();
+ const list=markets.filter(m=>(marketCat==='all'||categoryOf(m.name)===marketCat)&&(!q||m.name.toLowerCase().includes(q)||String(m.marketId).includes(q)));
+ const p=m=>Number.isFinite(m.price)?m.price:.5;
+ const by={ending:(a,b)=>a.endTs-b.endTs,uncertain:(a,b)=>Math.abs(p(a)-.5)-Math.abs(p(b)-.5),yes:(a,b)=>p(b)-p(a),no:(a,b)=>p(a)-p(b)}[marketSort];
+ return list.sort(by);
+}
+function renderChips(){
+ const counts={all:markets.length};for(const m of markets){const c=categoryOf(m.name);counts[c]=(counts[c]||0)+1;}
+ $('marketChips').innerHTML=CATS.filter(([id])=>id==='all'||counts[id]).map(([id,label])=>`<button type="button" class="chip" data-cat="${id}" aria-pressed="${marketCat===id}">${label}<span>${counts[id]||0}</span></button>`).join('');
+}
 function renderMarkets(){
  $('marketCount').textContent=`${markets.length} active markets · onchain`;
- if(!markets.length){$('marketsList').innerHTML='<div class="market-loading">No active PREDICT markets were found. Your builder can seed one with the supplied devnet CLI. No synthetic markets have been substituted.</div>';return;}
- $('marketsList').innerHTML=markets.map(m=>`<button type="button" aria-pressed="${selected?.marketPda===m.marketPda}" class="market-row ${selected?.marketPda===m.marketPda?'selected':''}" data-market="${escapeHtml(m.marketPda)}"><span><b>${escapeHtml(m.name)}</b><span class="row-meta">#${Number(m.marketId)||'?'} · Ends ${new Date(m.endTs*1000).toLocaleDateString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span></span><span class="prob-right"><strong>${Math.round(m.price*100)}%</strong><span>YES PRICE</span></span></button>`).join('');
+ renderChips();renderHero();
+ if(!markets.length){$('marketsList').innerHTML='<div class="market-loading">No active PREDICT markets were found on devnet right now. Markets appear here as soon as a builder creates one.</div>';return;}
+ const view=visibleMarkets();
+ if(!view.length){$('marketsList').innerHTML='<div class="market-loading">No live markets match this filter.</div>';return;}
+ $('marketsList').innerHTML=view.map(m=>{const y=Number.isFinite(m.price)?Math.round(m.price*100):null;const cat=CATS.find(c=>c[0]===categoryOf(m.name))[1];const soon=m.endTs-Date.now()/1000<3600;
+  return `<button type="button" aria-pressed="${selected?.marketPda===m.marketPda}" class="market-row ${selected?.marketPda===m.marketPda?'selected':''}" data-market="${escapeHtml(m.marketPda)}"><span class="row-main"><span class="row-tags"><span class="row-cat">${cat}</span><span class="row-ends ${soon?'soon':''}">${soon?'Closing · ':''}${relTime(m.endTs)}</span></span><b>${escapeHtml(m.name)}</b><span class="row-meta">#${Number(m.marketId)||'?'} · Ends ${new Date(m.endTs*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span><span class="row-bar"><i style="width:${y??50}%"></i></span></span><span class="row-odds"><span class="odd yes">Yes <b>${y??'—'}¢</b></span><span class="odd no">No <b>${y==null?'—':100-y}¢</b></span></span></button>`;}).join('');
  $('marketsList').querySelectorAll('[data-market]').forEach(btn=>btn.addEventListener('click',()=>{if(busy)return;selected=markets.find(x=>x.marketPda===btn.dataset.market);onMarketChange();$('marketsList').querySelector('[aria-pressed="true"]')?.focus();}));
 }
-function onMarketChange(){renderMarkets();renderProgress();clearQuote();renderDecay();
+// hero: the next live market to close, straight from devnet
+let heroMarket=null;
+function renderHero(){
+ heroMarket=[...markets].filter(m=>Number.isFinite(m.price)).sort((a,b)=>a.endTs-b.endTs)[0]||null;
+ $('chipMarkets').textContent=markets.length?format(markets.length,0):'0';
+ if(!heroMarket){$('heroLiveTitle').textContent='No live market on devnet right now';$('heroTrade').disabled=true;$('heroLiveEnds').textContent='—';return;}
+ const y=heroMarket.price*100;
+ $('heroLiveTitle').textContent=heroMarket.name;
+ $('heroLiveEnds').textContent=`Closes in ${relTime(heroMarket.endTs)}`;
+ $('heroYes').textContent=`${y.toFixed(1)}%`;$('heroNo').textContent=`${(100-y).toFixed(1)}%`;
+ $('heroBar').style.width=`${y}%`;
+ $('heroLiveMeta').textContent=`Market #${heroMarket.marketId} · PREDICT pm-AMM`;
+ $('heroTrade').disabled=false;
+}
+function renderLive(){
+ const m=selected;
+ if(!m){$('liveMarketName').textContent='Choose a market above';return;}
+ const now=Date.now()/1000,y=Number.isFinite(m.price)?m.price*100:null;
+ $('liveMarketName').textContent=m.name;
+ $('liveMarketLink').href=`https://solscan.io/account/${encodeURIComponent(m.marketPda)}?cluster=devnet`;
+ $('liveYes').textContent=y==null?'—':`${y.toFixed(1)}%`;$('liveNo').textContent=y==null?'—':`${(100-y).toFixed(1)}%`;
+ $('liveSplitYes').style.flexGrow=String(Math.max(8,y??50));$('liveSplitNo').style.flexGrow=String(Math.max(8,100-(y??50)));
+ const fmt=t=>new Date(t*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+ $('liveStart').textContent=Number.isFinite(m.startTs)?fmt(m.startTs):'—';$('liveEnd').textContent=fmt(m.endTs);$('liveLeft').textContent=relTime(m.endTs);
+ $('liveOpen').textContent=Number.isFinite(m.openingPriceBps)?`${(m.openingPriceBps/100).toFixed(1)}%`:'—';
+ const elapsed=Number.isFinite(m.startTs)&&m.endTs>m.startTs?Math.min(1,Math.max(0,(now-m.startTs)/(m.endTs-m.startTs))):null;
+ $('liveElapsed').textContent=elapsed==null?'—':`${(elapsed*100).toFixed(1)}%`;$('liveTimeBar').style.width=`${(elapsed??0)*100}%`;
+ $('liveStatus').textContent=m.resolved?'Resolved':m.endTs<=now?'Closed':'Open';
+}
+async function refreshSlot(){try{$('chipSlot').textContent=format(await connection.getSlot('confirmed'),0);}catch{}}
+let walletBalance=null;
+async function refreshBalance(){
+ if(!currentWallet()){walletBalance=null;$('walletBalance').textContent='Balance —';return;}
+ try{walletBalance=await getMusdcBalance();$('walletBalance').textContent=`Balance ${format(walletBalance)} mUSDC`;}catch{$('walletBalance').textContent='Balance unavailable';}
+}
+function onMarketChange(){renderMarkets();renderProgress();clearQuote();renderDecay();renderLive();
  if(selected){$('tradeQuestion').textContent=selected.name;$('tradeExpiry').textContent=`Market #${selected.marketId} · ends ${new Date(selected.endTs*1000).toLocaleString()}`;$('yesOdds').textContent=`${(selected.price*100).toFixed(1)}%`;$('noOdds').textContent=`${((1-selected.price)*100).toFixed(1)}%`;$('marketExplorer').href=`https://solscan.io/account/${encodeURIComponent(selected.marketPda)}?cluster=devnet`;$('marketExplorer').classList.remove('hidden');}
  else{$('tradeQuestion').textContent='Choose a market on the left';$('marketExplorer').classList.add('hidden');}
  void makeQuote();
@@ -65,7 +131,7 @@ function renderDecay(){
  if(!Number.isFinite(from)||!Number.isFinite(end)||end<=from){el.textContent='—';note.textContent='Onchain market timing unavailable';return;}
  const proportion=Math.min(1,Math.max(0,(end-Date.now()/1000)/(end-from)));
  el.textContent=(Math.sqrt(proportion)*100).toFixed(1)+'%';
- note.textContent='Theoretical √(time remaining / original duration) scaling, not a live reserve or return forecast.';
+ note.textContent='From this market\'s onchain start and end time. pm-AMM liquidity shrinks with √(time left) as expiry approaches.';
 }
 function agentSuggestion(){if(busy)return;if(!selected){setStatus('Select market first','error');return;}const p=selected.price;
  if(p>=0.45&&p<=0.55){$('agentInsight').textContent='Rule-based strategy: HOLD. Both outcomes are close to 50%, so this simple rule proposes no trade.';return;}
@@ -81,6 +147,7 @@ async function makeQuote({ quiet = false } = {}) {
     const fresh = await refreshMarket(marketPda);
     if (revision !== quoteRevision || selected?.marketPda !== marketPda) return;
     selected = fresh;
+    renderLive();
     if (Number.isFinite(fresh.price)) {
       $('yesOdds').textContent = `${(fresh.price * 100).toFixed(1)}%`;
       $('noOdds').textContent = `${((1 - fresh.price) * 100).toFixed(1)}%`;
@@ -96,6 +163,9 @@ async function makeQuote({ quiet = false } = {}) {
       quoteAtMs: quote.quoteAtMs, quoteMarketPda: marketPda
     }, market: fresh });
     $('quoteOutput').textContent = `${format(quote.quotedRaw / 1e6)} ${side.toUpperCase()}`;
+    const payout = quote.quotedRaw / 1e6, profit = payout - amount;
+    $('quotePayout').textContent = `${format(payout)} mUSDC (${profit >= 0 ? '+' : ''}${format(profit)})`;
+    $('quotePayout').className = profit >= 0 ? 'allowed' : 'denied';
     $('quoteFee').textContent = `${format(quote.feeRaw / 1e6)} mUSDC est.`;
     $('quoteMinimum').textContent = `${(quote.minRaw / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${side.toUpperCase()}`;
     const unresolved = journal().some(row => row.wallet === currentWallet() && pendingSwap(row));
@@ -364,6 +434,7 @@ function renderLifecycle() {
 function renderVaults() {
   const open = vaults.filter(v => vaultStatus(v).canCommit).length;
   $('vaultCount').textContent = `${open} open · ${vaults.length} shown`;
+  $('chipVaults').textContent = format(open, 0);
   $('vaultList').innerHTML = vaults.length ? vaults.map(v => {
     const state = v.launched ? 'Launched' : vaultStatus(v).canCommit ? 'Funding' : 'Closed';
     return `<button type="button" class="vault-row ${selectedVault?.vaultPda === v.vaultPda ? 'selected' : ''}" aria-pressed="${selectedVault?.vaultPda === v.vaultPda}" data-vault="${escapeHtml(v.vaultPda)}"><span><b>${escapeHtml(v.name)}</b><small>${format(v.yesTotal + v.noTotal)} / ${format(v.minTotal)} mUSDC committed</small></span><span class="pct">${state}</span></button>`;
@@ -465,7 +536,12 @@ function events(){
  });
  $('refreshVaults').addEventListener('click',loadVaults);
  $('vaultSideYes').addEventListener('click',()=>{vaultSide='yes';renderVaultSelected();});$('vaultSideNo').addEventListener('click',()=>{vaultSide='no';renderVaultSelected();});$('vaultCommitBtn').addEventListener('click',doVaultCommit);$('vaultClaimBtn').addEventListener('click',()=>doVaultClaim(false));$('vaultRefundBtn').addEventListener('click',()=>doVaultClaim(true));
- $('walletBtn').addEventListener('click',e=>{e.stopPropagation();toggleWalletPanel();});$('walletPanel').addEventListener('click',e=>{e.stopPropagation();const b=e.target.closest('[data-wallet]');if(b)chooseWallet(b.dataset.wallet);});$('walletBurner').addEventListener('click',()=>{toggleWalletPanel(false);createAndFund();});$('walletDisconnect').addEventListener('click',async()=>{toggleWalletPanel(false);await disconnectWallet();setStatus('Wallet disconnected.');});document.addEventListener('click',()=>toggleWalletPanel(false));document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleWalletPanel(false);});onWalletChange(()=>{renderWallet();renderVaultSelected();void makeQuote({quiet:true});});$('fundBtn').addEventListener('click',createAndFund);$('restoreWalletBtn').addEventListener('click',()=>createAndFund({restore:true}));$('refreshMarkets').addEventListener('click',loadMarkets);
+ $('walletBtn').addEventListener('click',e=>{e.stopPropagation();toggleWalletPanel();});$('walletPanel').addEventListener('click',e=>{e.stopPropagation();const b=e.target.closest('[data-wallet]');if(b)chooseWallet(b.dataset.wallet);});$('walletBurner').addEventListener('click',()=>{toggleWalletPanel(false);createAndFund();});$('walletDisconnect').addEventListener('click',async()=>{toggleWalletPanel(false);await disconnectWallet();setStatus('Wallet disconnected.');});document.addEventListener('click',()=>toggleWalletPanel(false));document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleWalletPanel(false);});onWalletChange(()=>{void refreshBalance();renderWallet();renderVaultSelected();void makeQuote({quiet:true});});$('fundBtn').addEventListener('click',createAndFund);$('restoreWalletBtn').addEventListener('click',()=>createAndFund({restore:true}));$('refreshMarkets').addEventListener('click',loadMarkets);
+ $('marketSearch').addEventListener('input',e=>{marketQuery=e.target.value;renderMarkets();});
+ $('marketSort').addEventListener('change',e=>{marketSort=e.target.value;renderMarkets();});
+ $('marketChips').addEventListener('click',e=>{const b=e.target.closest('[data-cat]');if(!b)return;marketCat=b.dataset.cat;renderMarkets();});
+ $('heroTrade').addEventListener('click',()=>{if(!heroMarket||busy)return;selected=markets.find(x=>x.marketPda===heroMarket.marketPda)||heroMarket;onMarketChange();document.getElementById('markets').scrollIntoView({behavior:'smooth'});});
+ $('maxAmount').addEventListener('click',async()=>{await refreshBalance();const cap=Math.min(100,getLimits().maxSingle||100,walletBalance??0);if(!(cap>=0.1)){setStatus('No test mUSDC in this wallet. Request test funds.','error');return;}$('tradeAmount').value=String(Math.floor(cap*10)/10);document.querySelectorAll('[data-amount]').forEach(x=>x.classList.remove('chosen'));makeQuote();});
  $('sideYes').addEventListener('click',()=>{side='yes';renderSide();makeQuote();});$('sideNo').addEventListener('click',()=>{side='no';renderSide();makeQuote();});
  for(const id of ['tradeAmount','maxSingle','maxTotal','slippage'])$(id).addEventListener('change',()=>makeQuote());
  document.querySelectorAll('[data-amount]').forEach(btn=>btn.addEventListener('click',()=>{$('tradeAmount').value=btn.dataset.amount;document.querySelectorAll('[data-amount]').forEach(x=>x.classList.toggle('chosen',x===btn));makeQuote();}));
@@ -493,7 +569,7 @@ function events(){
  $('shareBtn').addEventListener('click',async()=>{if(!selected){setStatus('Select a market first','error');return;}const url=new URL(location.href);url.searchParams.set('market',selected.marketPda);try{await navigator.clipboard.writeText(url.toString());setStatus('Direct market challenge link copied','ok')}catch{setStatus('Copy this link: '+url,'error');}});
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastRefreshAt>45_000)loadMarkets()});
 }
-renderWallet();renderProgress();renderJournal();events();void restoreWallet();loadStats();loadMarkets();loadVaults();void reconcileReceipts();void loadLifecycleProof();
+renderWallet();renderProgress();renderJournal();events();void restoreWallet().then(refreshBalance);void refreshSlot();setInterval(refreshSlot,15000);setInterval(()=>{if(!busy&&!document.hidden){renderMarkets();renderLive();}},30000);loadStats();loadMarkets();loadVaults();void reconcileReceipts();void loadLifecycleProof();
 setInterval(()=>{if(!document.hidden&&!busy){loadStats();if(selected)makeQuote({ quiet: true });loadVaults();}},30_000);
 
 setInterval(() => {
