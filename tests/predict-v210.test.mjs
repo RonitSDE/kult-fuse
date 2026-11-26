@@ -35,7 +35,7 @@ const memo = attestation.issue(intent);
 const options = { signature, wallet, marketPda, expectedMints, attestation, nowSec };
 
 function tx({ tag = memo, hash = blockhash, side = 0, amount = 5_000_000, gain = 6_100_000, debit = 5_000_000,
-  txSignature = signature } = {}) {
+  txSignature = signature, extra = [] } = {}) {
   const data = Buffer.alloc(25);
   anchorIx('swap').copy(data);
   data[8] = side;
@@ -50,7 +50,8 @@ function tx({ tag = memo, hash = blockhash, side = 0, amount = 5_000_000, gain =
         recentBlockhash: hash, accountKeys: [{ pubkey: wallet, signer: true }],
         instructions: [
           { programId: PROGRAM_ID, accounts: [wallet, marketPda, DEVNET_MUSDC, expectedMints.yes, expectedMints.no], data: base58(data) },
-          { programId: MEMO_PROGRAM_ID, parsed: tag }
+          { programId: MEMO_PROGRAM_ID, parsed: tag },
+          ...extra
         ]
       }
     },
@@ -179,4 +180,64 @@ test('v2.1.1: failed swaps leave the queue and stale entries expire', async () =
     assert.equal(run.dropped, 1);
     assert.equal(await registry.pendingCount(), 0);
   } finally { await rm(dir, { force: true, recursive: true }); }
+});
+
+// ---- v2.1.2 -------------------------------------------------------------------------------
+test('v2.1.2: a trade signed in Phantom still counts when Phantom adds Lighthouse guards and a priority fee', () => {
+  const lighthouse = { programId: 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95', accounts: [wallet], data: '3Bxs4Bc3VYuGVB19' };
+  const priority = { programId: 'ComputeBudget111111111111111111111111111111', accounts: [], data: '3DTZbgwsozUF' };
+  assert.equal(verifyPredictSwapTx(tx({ extra: [priority, lighthouse] }), options).ok, true);
+});
+
+test('v2.1.2: any other extra program still fails attestation', () => {
+  const other = { programId: address(), accounts: [wallet], data: '1' };
+  assert.equal(verifyPredictSwapTx(tx({ extra: [other] }), options).ok, false);
+});
+
+// ---- v2.1.3: sells ----------------------------------------------------------------------------
+function sellTx({ dir = 2, amount = 3_000_000, minOut = 1_500_000, sold = 3_000_000, credit = 1_600_000, otherDelta = 0, sellMemo } = {}) {
+  const sellIntent = { wallet, marketPda, blockhash, side: dir === 2 ? 'yes' : 'no', amountRaw: amount, minOutRaw: minOut, action: 'sell' };
+  const data = Buffer.alloc(25);
+  anchorIx('swap').copy(data); data[8] = dir;
+  data.writeBigUInt64LE(BigInt(amount), 9); data.writeBigUInt64LE(BigInt(minOut), 17);
+  const mintSold = dir === 2 ? expectedMints.yes : expectedMints.no, other = dir === 2 ? expectedMints.no : expectedMints.yes;
+  const token = (mint, amt) => ({ owner: wallet, mint, uiTokenAmount: { amount: String(amt) } });
+  return {
+    slot: 43, blockTime: nowSec,
+    transaction: { signatures: [signature], message: { recentBlockhash: blockhash, accountKeys: [{ pubkey: wallet, signer: true }], instructions: [
+      { programId: PROGRAM_ID, accounts: [wallet, marketPda, DEVNET_MUSDC, expectedMints.yes, expectedMints.no], data: base58(data) },
+      { programId: MEMO_PROGRAM_ID, parsed: sellMemo ?? attestation.issue(sellIntent) }] } },
+    meta: { err: null,
+      preTokenBalances: [token(DEVNET_MUSDC, 1_000_000), token(mintSold, 10_000_000), token(other, 2_000_000)],
+      postTokenBalances: [token(DEVNET_MUSDC, 1_000_000 + credit), token(mintSold, 10_000_000 - sold), token(other, 2_000_000 + otherDelta)] }
+  };
+}
+
+test('v2.1.3: an attested sell counts, with its mUSDC received as volume', () => {
+  const r = verifyPredictSwapTx(sellTx(), options);
+  assert.equal(r.ok, true, r.message);
+  assert.equal(r.action, 'sell'); assert.equal(r.side, 'yes');
+  assert.equal(r.received, 1.6); assert.equal(r.spent, 0);
+  assert.equal(r.mUsdcReceivedRaw, "1600000"); assert.equal(r.outcomeAmountRaw, "3000000");
+  assert.ok(Math.abs(r.feeEstimate - 1.6 * 200 / 9800) < 1e-6, 'fee is 2% of the gross USDC output');
+  assert.equal(verifyPredictSwapTx(sellTx({ dir: 3 }), options).side, 'no');
+});
+
+test('v2.1.3: sells must match the attestation to the unit and pay at least the minimum', () => {
+  assert.equal(verifyPredictSwapTx(sellTx({ sold: 2_900_000 }), options).ok, false, 'tokens sold differ from attested amount');
+  assert.equal(verifyPredictSwapTx(sellTx({ credit: 1_400_000 }), options).ok, false, 'below the signed minimum');
+  assert.equal(verifyPredictSwapTx(sellTx({ otherDelta: 5 }), options).ok, false, 'other outcome must not move');
+  const buyMemoOnSell = attestation.issue({ wallet, marketPda, blockhash, side: 'yes', amountRaw: 3_000_000, minOutRaw: 1_500_000 });
+  assert.equal(verifyPredictSwapTx(sellTx({ sellMemo: buyMemoOnSell }), options).ok, false, 'a buy attestation cannot be replayed on a sell');
+});
+
+test('v2.1.3: YES↔NO swaps are not counted', () => {
+  assert.equal(verifyPredictSwapTx(sellTx({ dir: 4 }), options).ok, false);
+});
+
+test('v2.1.3: stats count buys and sells, and volume includes both legs', async () => {
+  const { statsFromReceipts } = await import('../src/predict/proof.mjs');
+  const base = { ok: true, evidence: 'FINALIZED_ONCHAIN_SWAP', attribution: 'FUSE_API_ATTESTED', wallet };
+  const s = statsFromReceipts([{ ...base, signature: 'a', spent: 5, action: 'buy' }, { ...base, signature: 'b', received: 3.2, action: 'sell' }, { ...base, signature: 'c', spent: 1 }], true);
+  assert.equal(s.buys, 2); assert.equal(s.sells, 1); assert.equal(s.mUsdcVolume, 9.2); assert.equal(s.finalizedSwaps, 3);
 });

@@ -46,3 +46,36 @@ test('registry retries a just-confirmed signature the RPC has not served yet', a
     assert.equal(out.verified, false);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('v2.1.3: exact sell inverts a buy on the pm-AMM curve, and matches the SDK buy estimate', async () => {
+  const { sellGross, sellQuote } = await import('../src/predict/pricing.mjs');
+  const phi = (z) => Math.exp(-z * z / 2) / Math.sqrt(2 * Math.PI);
+  const m = { phi, capitalPhi: Phi };
+  const g = (u) => u * Phi(u) + phi(u);
+  const L = 50e6, u0 = 0.2;
+  const x = L * (g(u0) - u0), y = L * g(u0);                     // on the curve, YES = Φ(0.2) ≈ 57.9%
+  // Buy YES with d net USDC: d pairs are minted (x+d, y+d), then the pool pays out YES until the
+  // invariant holds again: y1 = y + d = L·g(u1), x1 = L·(g(u1) − u1), tokens = x + d − x1.
+  const d = 10e6, y1 = y + d;
+  let lo = -10, hi = 10;
+  for (let i = 0; i < 200; i += 1) { const mid = (lo + hi) / 2; if (L * g(mid) < y1) lo = mid; else hi = mid; }
+  const u1 = lo, x1 = L * (g(u1) - u1), tokens = x + d - x1;
+  assert.ok(Phi(u1) > Phi(u0), 'buying YES raises its price');
+  assert.ok(d / tokens > Phi(u0) && d / tokens < Phi(u1), 'average buy price sits between the before and after prices');
+  const back = sellGross({ x: x1, y: y1, lEff: L }, tokens, 'yes', m);
+  assert.ok(Math.abs(back - d) < 1, `selling the bought tokens returns the USDC (got ${back}, want ${d})`);
+  // Cross-check the buy against the real SDK estimate when the app's dependencies are installed.
+  try {
+    const { createRequire } = await import('node:module');
+    const sdkMath = createRequire(new URL('../apps/predict/package.json', import.meta.url))('@pm-amm/sdk/math');
+    const est = sdkMath.estimateSwapOutput(x, y, L, d, 'yes');
+    assert.ok(Math.abs(est.output - tokens) / tokens < 1e-4, `SDK buy ${est.output} vs curve ${tokens}`);
+    const sdkSell = sellGross({ x: x1, y: y1, lEff: L }, est.output, 'yes', { phi: sdkMath.phi, capitalPhi: sdkMath.capitalPhi });
+    assert.ok(Math.abs(sdkSell - d) / d < 1e-4, 'round trip with the SDK\'s own Φ and φ');
+  } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }
+  const mirror = { x: y, y: x, lEff: L };
+  assert.ok(Math.abs(sellGross({ x, y, lEff: L }, 5e6, 'no', m) - sellGross(mirror, 5e6, 'yes', m)) < 1e-3, 'NO mirrors YES');
+  const q = sellQuote({ x, y, lEff: L }, 'yes', 5e6, m);
+  assert.equal(q.feeRaw, Math.floor(q.grossRaw * 0.02));
+  assert.equal(q.netRaw + q.feeRaw, q.grossRaw);
+});

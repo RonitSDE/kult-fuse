@@ -1,6 +1,6 @@
 {
   "name": "kult-fuse",
-  "version": "2.1.1",
+  "version": "2.1.4",
   "private": true,
   "type": "module",
   "description": "KULT Fuse PREDICT-first sponsor edition: real Solana pm-AMM swaps and liquidity, app-side risk mandates, verified-onchain scoreboards. Legacy perps lab remains isolated.",

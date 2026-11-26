@@ -7,11 +7,13 @@ import { assertDevnet } from '../../../src/predict/network.mjs';
 import { getWallet } from './wallet.js';
 import { AnchorProvider } from '@anchor-lang/core';
 import { PmAmmClient } from '@pm-amm/sdk';
-import { i80f48ToNumber, priceFromReserves, estimateSwapOutput } from '@pm-amm/sdk/math';
+import { i80f48ToNumber, priceFromReserves, estimateSwapOutput, phi, capitalPhi } from '@pm-amm/sdk/math';
 import { SWAP_FEE_BPS } from '@pm-amm/sdk';
 import { normalizeVault, vaultStatus } from '../../../src/predict/vault.mjs';
 import { buildTaggedSwapIxs } from '../../../src/predict/tagged-swap.mjs';
-import { marketState as sharedMarketState } from '../../../src/predict/pricing.mjs';
+import { marketState as sharedMarketState, sellQuote } from '../../../src/predict/pricing.mjs';
+import { nextLpExitStep } from '../../../src/predict/lp-exit.mjs';
+import { pinWallet } from '../../../src/predict/pinned-wallet.mjs';
 
 const PROGRAM='GV1FMGHRYBjQLaghE5fnGuYCuCcpdt3GD5xEX3TwN16y';
 const MINT='3WQ8hCqTNwjrh8WzE2XyoZoUrd1miPcwWfMkmFPUMEWZ';
@@ -112,14 +114,21 @@ export function minForBps(quote,bps) {
  return minRaw;
 }
 // Record the signed transaction ID before broadcast so retries only check status.
-export async function buyPrediction(market, side, amountRaw, minOutRaw, { beforeSend, onSigned }) {
+export async function buyPrediction(market, side, amountRaw, minOutRaw, hooks) {
+  return tradePrediction(market, { action: 'buy', side, amountRaw, minOutRaw }, hooks);
+}
+export async function sellPrediction(market, side, amountRaw, minOutRaw, hooks) {
+  return tradePrediction(market, { action: 'sell', side, amountRaw, minOutRaw }, hooks);
+}
+// One attested path for buys and sells. A sell's amountRaw is outcome tokens; its minimum is mUSDC.
+async function tradePrediction(market, { action, side, amountRaw, minOutRaw }, { beforeSend, beforeBroadcast, onSigned }) {
   await requireDevnet();
   const { client, wallet } = browserSigner();
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
   const response = await fetch('/api/predict/attest', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ wallet: wallet.publicKey.toBase58(), marketPda: market.marketPda,
-      blockhash, side, amountRaw, minOutRaw }), signal: AbortSignal.timeout(7000)
+      blockhash, side, amountRaw, minOutRaw, ...(action === 'sell' ? { action } : {}) }), signal: AbortSignal.timeout(7000)
   });
   if (!response.ok) throw new Error('Trade review service is busy. Try again.');
   const { memo } = await response.json();
@@ -129,11 +138,15 @@ export async function buyPrediction(market, side, amountRaw, minOutRaw, { before
   const ixs = await buildTaggedSwapIxs({ web3, splToken, sdk }, client, {
     marketPda: market.marketPda, authority: market.raw.authority.toString(),
     collateralMint: market.raw.collateralMint.toString()
-  }, side === 'yes' ? 'usdcToYes' : 'usdcToNo', amountRaw, minOutRaw, memo);
+  }, action === 'sell' ? (side === 'yes' ? 'yesToUsdc' : 'noToUsdc') : (side === 'yes' ? 'usdcToYes' : 'usdcToNo'), amountRaw, minOutRaw, memo);
   beforeSend();
   const tx = new Transaction({ feePayer: wallet.publicKey, blockhash, lastValidBlockHeight }).add(...ixs);
   const signed = await wallet.signTransaction(tx);
   if (!signed?.signature) throw new Error('Wallet did not sign the trade');
+  // The popup can stay open for a while. Recheck wallet, pause and session before anything is sent;
+  // a signed transaction that is never broadcast simply expires with its blockhash.
+  const signer = (signed.feePayer ?? wallet.publicKey).toBase58();
+  beforeBroadcast?.(signer);
   // An extension may only add compute-budget instructions; anything else fails the server's attestation check.
   const raw = signed.serialize();
   const signature = bs58.encode(signed.signature);
@@ -199,4 +212,117 @@ export async function refundVaultCommit(vaultPda) {
 export async function claimVaultLp(vaultPda,marketPda){
  await requireDevnet();
  const {client}=browserSigner();return client.send.claimCommitter(new PublicKey(vaultPda),new PublicKey(marketPda));
+}
+
+// ---------- v2.1.3: selling, SOL for fees, liquidity exit ----------
+
+/** Exact sell quote: outcome tokens in (human units), mUSDC out net of the 2% fee. Shape matches exactQuote. */
+export function exactSellQuote(market, side, tokens) {
+ if(!market?.raw)throw Error('Valid onchain market required');
+ if(market.resolved || market.endTs<=Date.now()/1000)throw Error('Market expired or resolved');
+ const raw=Math.floor(tokens*1e6);
+ if(!Number.isSafeInteger(raw)||raw<100_000)throw Error('Sell at least 0.1 tokens');
+ const q=sellQuote(marketState(market.raw),side,raw,{phi,capitalPhi});
+ if(!Number.isSafeInteger(q.netRaw)||q.netRaw<1)throw Error('No safe sell estimate available');
+ return {raw,quotedRaw:q.netRaw,feeRaw:q.feeRaw,marketPda:market.marketPda,quoteAtMs:Date.now(),estimate:true,action:'sell',side};
+}
+
+/** Raw (6-decimal) YES/NO balances, for selling exact amounts. */
+export async function getOutcomeBalancesRaw(market, owner = getWallet()?.publicKey) {
+ if(!owner||!market)return {yes:0,no:0};
+ const tokens=await connection.getParsedTokenAccountsByOwner(owner,{programId:new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')});
+ const find=address=>tokens.value.filter(x=>x.account.data.parsed.info.mint===address).reduce((n,x)=>n+Number(x.account.data.parsed.info.tokenAmount.amount||0),0);
+ return {yes:find(market.yesMint),no:find(market.noMint)};
+}
+
+// A trade costs ~0.000005 SOL plus up to ~0.01 SOL of token-account rent the first time.
+export const MIN_SOL_FOR_TRADES = 0.012;
+export async function getSolBalance() {
+ const wallet=getWallet();if(!wallet)return 0;
+ return (await connection.getBalance(wallet.publicKey,'confirmed'))/1e9;
+}
+/**
+ * The PREDICT faucet's SOL drip is optional and can be skipped (`sol: 0`, `solSkipped`). If the
+ * wallet can't pay fees, try one devnet airdrop; otherwise report what the user must do.
+ */
+export async function ensureSolForFees() {
+ const wallet=getWallet();if(!wallet)throw Error('Create your devnet wallet first');
+ let sol=await getSolBalance();
+ if(sol>=MIN_SOL_FOR_TRADES)return {ok:true,sol};
+ try{
+  const sig=await connection.requestAirdrop(wallet.publicKey,0.05*1e9);
+  const {blockhash,lastValidBlockHeight}=await connection.getLatestBlockhash('confirmed');
+  await connection.confirmTransaction({signature:sig,blockhash,lastValidBlockHeight},'confirmed');
+  sol=await getSolBalance();
+ }catch{/* devnet airdrops are often rate-limited or dry */}
+ return {ok:sol>=MIN_SOL_FOR_TRADES,sol,address:wallet.publicKey.toBase58()};
+}
+
+/** The connected wallet's LP position on a market, in human units, or null. */
+export async function getLpPosition(market) {
+ const wallet=getWallet();if(!wallet||!market)return null;
+ const pos=await readonlyClient.fetchLpPosition(new PublicKey(market.marketPda),wallet.publicKey);
+ if(!pos)return null;
+ const shares=BigInt(pos.shares.toString());
+ return {sharesRaw:shares,hasShares:shares>0n,deposited:num(pos.collateralDeposited)/1e6};
+}
+
+/** Chain state the LP-exit planner needs, read fresh before every step. */
+export async function readLpExitState(marketPda, vaultPda = null, owner = getWallet()?.publicKey) {
+ if(!owner)throw Error('Create your devnet wallet first');
+ if(typeof owner==='string')owner=new PublicKey(owner);
+ const market=await refreshMarket(marketPda);
+ const [lp,bal,commit]=await Promise.all([
+  readonlyClient.fetchLpPosition(new PublicKey(marketPda),owner),
+  getOutcomeBalancesRaw(market,owner),
+  vaultPda?readonlyClient.fetchCommitPosition(new PublicKey(vaultPda),owner).catch(()=>null):null
+ ]);
+ let commitClaimable=false;
+ if(commit&&!commit.claimed&&num(commit.yesAmount)+num(commit.noAmount)>0){
+  const vault=await readonlyClient.fetchVault(new PublicKey(vaultPda));
+  commitClaimable=Boolean(vault?.launched&&vault.market?.toString()===marketPda);
+ }
+ return {market,state:{resolved:market.resolved,winningSide:market.winningSide,commitClaimable,hasLp:Boolean(lp),
+  lpShares:lp?BigInt(lp.shares.toString()):0n,yes:bal.yes,no:bal.no},
+  deposited:lp?num(lp.collateralDeposited)/1e6:0};
+}
+
+/**
+ * Run the LP exit to completion, one transaction per step. `onStep` fires as soon as each step is
+ * confirmed, so the caller can save that receipt before the next popup. If a step fails, the error
+ * carries `completed` and running again resumes from chain state.
+ */
+export async function runLpExit(marketPda, { vaultPda = null, owner = null, onStep } = {}) {
+ await requireDevnet();
+ // One wallet for the whole flow: reads, building and signing all use `pinned`, and the flow stops
+ // if the extension's active account changes, including while a signing popup is open.
+ const active=getWallet();if(!active)throw Error('Create your devnet wallet first');
+ if(owner&&active.publicKey.toBase58()!==owner)throw Error('Active wallet changed. Click again to continue with this wallet.');
+ const pinned=pinWallet(active,getWallet);
+ const client=PmAmmClient.fromProvider(new AnchorProvider(connection,pinned,{commitment:'confirmed',preflightCommitment:'confirmed'}),programId,mint);
+ const pda=new PublicKey(marketPda);
+ const attempted=new Set(),completed=[];
+ for(let i=0;i<6;i++){
+  pinned.assertActive();
+  const {state}=await readLpExitState(marketPda,vaultPda,pinned.publicKey);
+  pinned.assertActive();
+  const next=nextLpExitStep(state,attempted);
+  if(!next)return {completed,state};
+  attempted.add(next.step);
+  try{
+   const signature=
+    next.step==='claimCommitter'?await client.send.claimCommitter(new PublicKey(vaultPda),pda):
+    next.step==='withdrawLiquidity'?await client.send.withdrawLiquidity(pda,sdk.bn(state.lpShares)):
+    next.step==='redeemPair'?await client.send.redeemPair(pda,next.amountRaw):
+    next.step==='claimLpResiduals'?await client.send.claimLpResiduals(pda):
+    await client.send.claimWinnings(pda);
+   const done={step:next.step,signature,amountRaw:next.amountRaw||0};
+   completed.push(done);
+   onStep?.(done);
+  }catch(e){
+   if(next.step==='claimLpResiduals'&&sdk.mapAnchorError(e)?.name==='NoResidualsToClaim')continue;
+   e.completed=completed;e.failedStep=next.step;e.wallet=pinned.publicKey.toBase58();throw e;
+  }
+ }
+ return {completed};
 }

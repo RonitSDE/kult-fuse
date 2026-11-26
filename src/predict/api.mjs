@@ -65,7 +65,7 @@ export async function handlePredictApi(req, res, url) {
       const file = process.env.PREDICT_LIFECYCLE_FILE;
       const info = file && await stat(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
       const proof = info?.isFile() && info.size < 64_000 ? JSON.parse(await readFile(file, 'utf8')) : null;
-      const current = proof?.schema === 'kult-fuse-devnet-lifecycle-v1' && proof.network === 'devnet' &&
+      const current = ['kult-fuse-devnet-lifecycle-v1', 'kult-fuse-devnet-lifecycle-v2'].includes(proof?.schema) && proof.network === 'devnet' &&
         proof.programId === predictPublicConfig.programId && predictPublicConfig.buildSha &&
         proof.buildSha === predictPublicConfig.buildSha;
       respond(res, current ? 200 : 404, current ? proof : { error: 'Lifecycle proof pending' });

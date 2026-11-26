@@ -1,6 +1,6 @@
 {
   "name": "KULT Fuse \u2014 PREDICT Prediction Arena",
-  "version": "2.1.1",
+  "version": "2.1.4",
   "status": "DEVNET_RELEASE_CANDIDATE_LIVE_PROOF_PENDING",
   "primaryProtocol": "PREDICT pm-AMM",
   "chain": "solana-devnet",
@@ -17,11 +17,11 @@
   "daoFeesObserved": null,
   "devnetEndToEndVerified": false,
   "applicationMandateCryptoBound": false,
-  "executionAuthority": "Disposable tab-scoped test wallet. User approves each Fuse swap under browser-enforced session limits.",
+  "executionAuthority": "The trader's own signer: a Devnet test wallet saved in their browser, or Phantom, Solflare or Backpack. The trader approves each Fuse swap under browser-enforced session limits.",
   "risks": [
     "manual PREDICT market resolution",
     "PREDICT program authority and audit limitations",
-    "disposable browser wallet scoped to a tab",
+    "Fuse session limits are enforced in the browser",
     "live Devnet lifecycle pending"
   ],
   "legacyPerps": "Separate /perps/ legacy research product; Velocity fills not validated and are not PREDICT traction",

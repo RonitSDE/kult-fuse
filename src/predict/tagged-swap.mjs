@@ -15,7 +15,7 @@ export async function buildTaggedSwapIxs(deps, client, { marketPda, authority, c
   const { web3, splToken, sdk } = deps;
   const { PublicKey, TransactionInstruction, ComputeBudgetProgram } = web3;
   const { getAssociatedTokenAddressSync, createAssociatedTokenAccountIdempotentInstruction } = splToken;
-  if (!['usdcToYes', 'usdcToNo'].includes(direction)) throw new Error('Only USDC → YES/NO buys are tagged');
+  if (!['usdcToYes', 'usdcToNo', 'yesToUsdc', 'noToUsdc'].includes(direction)) throw new Error('Only USDC ↔ YES/NO trades are tagged');
   if (!Number.isSafeInteger(amountRaw) || amountRaw <= 0 || !Number.isSafeInteger(minOutRaw) || minOutRaw < 1) throw new Error('Invalid raw swap amounts');
   const signer = client.walletPubkey();
   const market = new PublicKey(marketPda);

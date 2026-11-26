@@ -8,15 +8,22 @@ export function isBase58(value, bytes) {
     /^[1-9A-HJ-NP-Za-km-z]+$/.test(value) && decodeBase58(value).length === bytes;
 }
 
+// A trade is a buy (USDC → YES/NO; amountRaw is mUSDC spent) or, since v2.1.3, a sell
+// (YES/NO → USDC; amountRaw is outcome tokens sold). `action` is left out of buy intents so the
+// attestation for a buy is byte-identical to v2.1.x.
 export function normalizeTradeIntent(body) {
   const { wallet, marketPda, blockhash, side, amountRaw, minOutRaw } = body ?? {};
+  const action = body?.action ?? 'buy';
+  const maxAmount = action === 'sell' ? 100_000_000_000 : 100_000_000;
   if (![wallet, marketPda, blockhash].every(key => isBase58(key, 32)) ||
-      !['yes', 'no'].includes(side) ||
-      !Number.isSafeInteger(amountRaw) || amountRaw < 100_000 || amountRaw > 100_000_000 ||
+      !['yes', 'no'].includes(side) || !['buy', 'sell'].includes(action) ||
+      !Number.isSafeInteger(amountRaw) || amountRaw < 100_000 || amountRaw > maxAmount ||
       !Number.isSafeInteger(minOutRaw) || minOutRaw < 1) {
     throw new Error('Invalid trade review');
   }
-  return { wallet, marketPda, blockhash, side, amountRaw, minOutRaw };
+  return action === 'sell'
+    ? { wallet, marketPda, blockhash, side, amountRaw, minOutRaw, action }
+    : { wallet, marketPda, blockhash, side, amountRaw, minOutRaw };
 }
 
 export function createTradeAttestation(secret, clock = () => Math.floor(Date.now() / 1000)) {

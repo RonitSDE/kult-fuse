@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '../..');
 const webRoot = path.join(root, 'web');
 const predictWebRoot = path.join(root,'apps/predict/dist');
 const port = Number(process.env.PORT || 8787);
-const VERSION = '2.1.1';
+const VERSION = '2.1.4';
 const runtime = await new Runtime(process.env).start();
 if (!runtime.live) console.warn(`setup mode: ${runtime.setupError}`);
 

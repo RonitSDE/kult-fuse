@@ -1,6 +1,7 @@
-import {PROGRAM_ID,DEVNET_MUSDC,evaluatePrediction} from '../../../src/predict/policy.mjs';
+import {PROGRAM_ID,DEVNET_MUSDC,evaluatePrediction,recheckBeforeBroadcast} from '../../../src/predict/policy.mjs';
+import {LP_EXIT_JOURNAL_KIND} from '../../../src/predict/lp-exit.mjs';
 import {vaultStatus,vaultOdds} from '../../../src/predict/vault.mjs';
-import {fetchMarketList,refreshMarket,exactQuote,minForBps,ensureWallet,hasLegacyWallet,getWallet,availableWallets,connectWallet,disconnectWallet,restoreWallet,onWalletChange,getMusdcBalance,getOutcomeBalances,connection,buyPrediction,provideLiquidity,claimWinnings,faucet,waitForConfirmation,explorer,fetchVaults,commitToVault,refundVaultCommit,claimVaultLp} from './predict-client.js';
+import {fetchMarketList,refreshMarket,exactQuote,minForBps,ensureWallet,hasLegacyWallet,getWallet,availableWallets,connectWallet,disconnectWallet,restoreWallet,onWalletChange,getMusdcBalance,getOutcomeBalances,connection,buyPrediction,provideLiquidity,claimWinnings,faucet,exactSellQuote,sellPrediction,getOutcomeBalancesRaw,ensureSolForFees,readLpExitState,runLpExit,waitForConfirmation,explorer,fetchVaults,commitToVault,refundVaultCommit,claimVaultLp} from './predict-client.js';
 import { loadTradeSession, saveTradeSession, startTradeSession, withTradeLock } from './trade-session.js';
 const $=id=>document.getElementById(id);
 const format=(n,digits=2)=>n != null && Number.isFinite(Number(n))?Number(n).toLocaleString('en-US',{maximumFractionDigits:digits}):'—';
@@ -13,7 +14,7 @@ let linkedMarket, lifecycleRequest = 0;
 function journal(){try{const arr=JSON.parse(localStorage.getItem(journalKey));return Array.isArray(arr)?arr:[]}catch{return []}}
 function writeJournal(entry){const items=journal();items.unshift(entry);localStorage.setItem(journalKey,JSON.stringify(items.slice(0,100)));renderJournal();}
 function setStatus(text,tone=''){const el=$('statusText');el.textContent=text;el.className='trade-status '+tone;}
-function setBusy(flag){busy=flag;for(const id of ['tradeBtn','walletBtn','fundBtn','lpBtn','claimBtn','refreshMarkets','refreshVaults','vaultCommitBtn','vaultClaimBtn','vaultRefundBtn','restoreWalletBtn','refreshQuoteBtn'])$(id).disabled=flag;renderProgress();renderVaultSelected();if(!flag){$('tradeBtn').disabled=!quote?.allowed;void refreshBalance();}}
+function setBusy(flag){busy=flag;for(const id of ['vaultLpPayoutBtn','sellBtn','lpWithdrawBtn','lpClaimBtn','tradeBtn','walletBtn','fundBtn','lpBtn','claimBtn','refreshMarkets','refreshVaults','vaultCommitBtn','vaultClaimBtn','vaultRefundBtn','restoreWalletBtn','refreshQuoteBtn'])$(id).disabled=flag;renderProgress();renderVaultSelected();if(!flag){$('tradeBtn').disabled=!quote?.allowed;$('sellBtn').disabled=!sellQ?.allowed;void refreshBalance();}}
 function currentWallet(){try{return getWallet()?.publicKey.toBase58()||null}catch{return null}}
 function getLimits() {
   return { maxSingle: Number($('maxSingle').value), maxTotal: Number($('maxTotal').value),
@@ -82,7 +83,9 @@ function renderMarkets(){
  const view=visibleMarkets();
  if(!view.length){$('marketsList').innerHTML='<div class="market-loading">No live markets match this filter.</div>';return;}
  $('marketsList').innerHTML=view.map(m=>{const y=Number.isFinite(m.price)?Math.round(m.price*100):null;const cat=CATS.find(c=>c[0]===categoryOf(m.name))[1];const soon=m.endTs-Date.now()/1000<3600;
-  return `<button type="button" aria-pressed="${selected?.marketPda===m.marketPda}" class="market-row ${selected?.marketPda===m.marketPda?'selected':''}" data-market="${escapeHtml(m.marketPda)}"><span class="row-main"><span class="row-tags"><span class="row-cat">${cat}</span><span class="row-ends ${soon?'soon':''}">${soon?'Closing · ':''}${relTime(m.endTs)}</span></span><b>${escapeHtml(m.name)}</b><span class="row-meta">#${Number(m.marketId)||'?'} · Ends ${new Date(m.endTs*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span><span class="row-bar"><i style="width:${y??50}%"></i></span></span><span class="row-odds"><span class="odd yes">Yes <b>${y??'—'}¢</b></span><span class="odd no">No <b>${y==null?'—':100-y}¢</b></span></span></button>`;}).join('');
+  return `<button type="button" aria-pressed="${selected?.marketPda===m.marketPda}" class="market-row ${selected?.marketPda===m.marketPda?'selected':''}" data-market="${escapeHtml(m.marketPda)}"><span class="row-main"><span class="row-tags"><span class="row-cat">${cat}</span><span class="row-ends ${soon?'soon':''}">${soon?'Closing · ':''}${relTime(m.endTs)}</span></span><b>${escapeHtml(m.name)}</b><span class="row-meta">#${Number(m.marketId)||'?'} · Ends ${new Date(m.endTs*1000).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span><span class="row-bar"><i data-w="${y??50}"></i></span></span><span class="row-odds"><span class="odd yes">Yes <b>${y??'—'}¢</b></span><span class="odd no">No <b>${y==null?'—':100-y}¢</b></span></span></button>`;}).join('');
+ // CSP (style-src 'self') blocks inline style attributes in markup; set bar widths via the DOM.
+ for(const bar of $('marketsList').querySelectorAll('.row-bar i[data-w]'))bar.style.width=`${Number(bar.dataset.w)}%`;
  $('marketsList').querySelectorAll('[data-market]').forEach(btn=>btn.addEventListener('click',()=>{if(busy)return;selected=markets.find(x=>x.marketPda===btn.dataset.market);onMarketChange();$('marketsList').querySelector('[aria-pressed="true"]')?.focus();}));
 }
 // hero: the next live market to close, straight from devnet
@@ -120,7 +123,7 @@ async function refreshBalance(){
  if(!currentWallet()){walletBalance=null;$('walletBalance').textContent='Balance —';return;}
  try{walletBalance=await getMusdcBalance();$('walletBalance').textContent=`Balance ${format(walletBalance)} mUSDC`;}catch{$('walletBalance').textContent='Balance unavailable';}
 }
-function onMarketChange(){renderMarkets();renderProgress();clearQuote();renderDecay();renderLive();
+function onMarketChange(){renderMarkets();renderProgress();clearQuote();renderDecay();renderLive();void refreshPosition();
  if(selected){$('tradeQuestion').textContent=selected.name;$('tradeExpiry').textContent=`Market #${selected.marketId} · ends ${new Date(selected.endTs*1000).toLocaleString()}`;$('yesOdds').textContent=`${(selected.price*100).toFixed(1)}%`;$('noOdds').textContent=`${((1-selected.price)*100).toFixed(1)}%`;$('marketExplorer').href=`https://solscan.io/account/${encodeURIComponent(selected.marketPda)}?cluster=devnet`;$('marketExplorer').classList.remove('hidden');}
  else{$('tradeQuestion').textContent='Choose a market on the left';$('marketExplorer').classList.add('hidden');}
  void makeQuote();
@@ -230,11 +233,17 @@ async function createAndFund({ restore = false } = {}) {
       return;
     }
     setStatus('Requesting test SOL and mUSDC from PREDICT…');
-    const result = await faucet();
+    let result = null, faucetError = null;
+    try { result = await faucet(); } catch (error) { faucetError = error; }
     const balance = await getMusdcBalance();
-    setStatus(`Wallet balance ${format(balance)} mUSDC. Funding receipt ${short(result.signature || '')}.`, 'ok');
+    // The PREDICT faucet may skip its SOL drip (reserve low or per-IP cap). Fees still need SOL.
+    if (!result?.sol) setStatus('Checking SOL for network fees…');
+    const sol = await ensureSolForFees();
+    if (!sol.ok) { showSolHelp(sol, `Wallet has ${format(balance)} mUSDC.`); return; }
+    if (faucetError && !(balance > 0)) throw faucetError;
+    setStatus(`Wallet ready: ${format(balance)} mUSDC and ${sol.sol.toFixed(3)} SOL for fees.${result?.signature ? ' Funding receipt ' + short(result.signature) + '.' : ''}`, 'ok');
   } catch (error) {
-    setStatus(error.message, 'error');
+    failStatus(error);
   } finally {
     setBusy(false);
     void makeQuote({ quiet: true });
@@ -265,6 +274,7 @@ async function sendTrade() {
         throw new Error('Price moved. Review the updated minimum before approving.');
       }
       if (await getMusdcBalance() < amount) throw new Error('Insufficient test mUSDC. Request test funds.');
+      await requireSol();
       setStatus('Preparing your approved Devnet swap…');
       await buyPrediction(fresh, approved.side, approved.raw, approved.minRaw, {
         beforeSend() {
@@ -275,6 +285,11 @@ async function sendTrade() {
             quoteAtMs: approved.quoteAtMs, quoteMarketPda: approved.marketPda
           } });
           if (result.status !== 'ALLOW_AS_APP_CHECK') throw new Error(result.reason);
+        },
+        beforeBroadcast(signer) {
+          const check = recheckBeforeBroadcast({ action: 'buy', mandate: mandate(), wallet, activeWallet: currentWallet(),
+            signer, marketPda, amount, market: fresh });
+          if (!check.ok) throw new Error(check.reason);
         },
         onSigned(signed, lastValidBlockHeight) {
           const current = mandate();
@@ -288,7 +303,7 @@ async function sendTrade() {
     });
     setStatus('Swap broadcast. Check its receipt below.', 'ok');
   } catch (error) {
-    setStatus(signature ? 'Broadcast status is uncertain. Fuse will check the saved signature.' : error.message, 'error');
+    if (signature) setStatus('Broadcast status is uncertain. Fuse will check the saved signature.', 'error'); else failStatus(error);
   } finally {
     setBusy(false);
     if (signature) void reconcileReceipts();
@@ -353,7 +368,7 @@ function renderJournal() {
   const wallet = currentWallet();
   const entries = journal().filter(x => !wallet || x.wallet === wallet || !x.wallet);
   $('retryReceiptBtn').hidden = !entries.some(pendingSwap);
-  $('journal').innerHTML = entries.length ? entries.slice(0, 8).map(e => `<div class="proof-entry"><span class="proof-ic" aria-hidden="true">↗</span><div class="proof-content"><strong>${escapeHtml(e.kind?.replaceAll('_', ' ') || e.side?.toUpperCase() || 'Trade')}${e.amount > 0 ? ' · ' + format(e.amount) + ' mUSDC' : ''}</strong><span>${escapeHtml(receiptLabels[e.status] || 'Awaiting verification')} · <a href="${explorer(e.signature)}" target="_blank" rel="noopener noreferrer">${escapeHtml(short(e.signature))} ↗</a></span></div><span class="proof-time">${new Date(e.at).toLocaleDateString()}</span></div>`).join('') : '<p class="empty">Your Devnet transactions will appear here.</p>';
+  $('journal').innerHTML = entries.length ? entries.slice(0, 8).map(e => `<div class="proof-entry"><span class="proof-ic" aria-hidden="true">↗</span><div class="proof-content"><strong>${escapeHtml(e.kind?.replaceAll('_', ' ') || (e.action === 'sell' ? 'SELL ' : '') + (e.side?.toUpperCase() || 'Trade'))}${e.amount > 0 ? ' · ' + format(e.amount) + (e.action === 'sell' ? ' tokens' : ' mUSDC') : ''}</strong><span>${escapeHtml(receiptLabels[e.status] || 'Awaiting verification')} · <a href="${explorer(e.signature)}" target="_blank" rel="noopener noreferrer">${escapeHtml(short(e.signature))} ↗</a></span></div><span class="proof-time">${new Date(e.at).toLocaleDateString()}</span></div>`).join('') : '<p class="empty">Your Devnet transactions will appear here.</p>';
 }
 async function loadStats() {
   try {
@@ -365,17 +380,171 @@ async function loadStats() {
     $('metricVolume').textContent = format(data.mUsdcVolume,6);
     $('metricRepeat').textContent = format(data.repeatTraders);
     $('metricDaoFees').textContent = format(data.observedDaoFeesMUsdc,6);
-    $('publicFeed').innerHTML = data.receipts.length ? data.receipts.slice(0, 8).map(e => `<div class="proof-entry"><span class="proof-ic" aria-hidden="true">✓</span><div class="proof-content"><strong>${escapeHtml(e.side.toUpperCase())} · ${format(e.spent)} mUSDC · ${escapeHtml(short(e.wallet))}</strong><span>FINALIZED · <a href="${explorer(e.signature)}" target="_blank" rel="noopener noreferrer">${escapeHtml(short(e.signature))} ↗</a></span></div><span class="proof-time">${new Date(e.time * 1000).toLocaleDateString()}</span></div>`).join('') : '<p class="empty">No finalized Fuse swaps yet.</p>';
+    $('publicFeed').innerHTML = data.receipts.length ? data.receipts.slice(0, 8).map(e => `<div class="proof-entry"><span class="proof-ic" aria-hidden="true">✓</span><div class="proof-content"><strong>${e.action === 'sell' ? 'SELL ' : ''}${escapeHtml(e.side.toUpperCase())} · ${format(e.action === 'sell' ? e.received : e.spent)} mUSDC · ${escapeHtml(short(e.wallet))}</strong><span>FINALIZED · <a href="${explorer(e.signature)}" target="_blank" rel="noopener noreferrer">${escapeHtml(short(e.signature))} ↗</a></span></div><span class="proof-time">${new Date(e.time * 1000).toLocaleDateString()}</span></div>`).join('') : '<p class="empty">No finalized Fuse swaps yet.</p>';
+    if (Number.isFinite(data.sells)) $('metricTrades').title = `${data.buys ?? 0} buys · ${data.sells} sells`;
   } catch {
     for (const id of ['metricWallets', 'metricTrades', 'metricVolume', 'metricRepeat', 'metricDaoFees']) $(id).textContent = '—';
     $('publicFeed').innerHTML = '<p class="empty">Scoreboard temporarily unavailable.</p>';
   }
 }
 async function loadMarkets(){if(busy)return;setStatus('Reading PREDICT pm-AMM markets from Solana devnet…');$('marketCount').textContent='Fetching onchain';try{markets=await fetchMarketList();lastRefreshAt=Date.now();const deepMarket=new URLSearchParams(location.search).get('market');selected=markets.find(x=>x.marketPda===(selected?.marketPda || deepMarket))||markets[0]||null;renderMarkets();onMarketChange();}catch(e){markets=[];selected=null;$('marketsList').innerHTML=`<p class="empty">Onchain market discovery unavailable: ${escapeHtml(e.message)}. No markets are fabricated.</p>`;$('marketCount').textContent='RPC unavailable';setStatus('Market discovery failed: '+e.message,'error');}}
-async function doLp(){if(busy)return;try{if(!selected||!currentWallet())throw Error('Select market and create test wallet first');setBusy(true);const m=await refreshMarket(selected.marketPda);if(m.resolved||m.endTs<Date.now()/1000)throw Error('Market has closed');const amount=Number($('lpAmount').value);if(!Number.isFinite(amount)||amount<1||amount>100)throw Error('LP deposit must be 1–100 mUSDC');if(!confirm(`Provide ${amount} mock-USDC of LP liquidity to this PREDICT market? Liquidity providers face economic risk. This is NOT a trade.`))return;setBusy(true);setStatus('Submitting real pm-AMM liquidity deposit…');const sig=await provideLiquidity(m,amount);await waitForConfirmation(sig);writeJournal({signature:sig,kind:'LP_DEPOSIT',amount,side:'LP',marketPda:m.marketPda,at:Date.now(),status:'ONCHAIN_CONFIRMED_NOT_COUNTED_AS_TRADE'});setStatus('LP deposit confirmed on devnet: '+short(sig),'ok')}catch(e){setStatus(e.message,'error')}finally{setBusy(false)}}
-async function doClaim(){if(busy)return;try{const addr=$('claimMarketPda').value.trim();if(!addr||!currentWallet())throw Error('Enter resolved market PDA and create wallet');setBusy(true);const m=await refreshMarket(addr);if(!m.resolved)throw Error('This market is not resolved yet');if(!confirm('Claim winning PREDICT tokens for this market?'))return;setBusy(true);const sig=await claimWinnings(m);await waitForConfirmation(sig);writeJournal({signature:sig,kind:'CLAIM',amount:0,side:'CLAIM',marketPda:addr,at:Date.now(),status:'ONCHAIN_CONFIRMED_NOT_COUNTED_AS_TRADE'});setStatus('Claim confirmed: '+short(sig),'ok')}catch(e){setStatus(e.message,'error')}finally{setBusy(false)}}
+async function doLp(){if(busy)return;try{if(!selected||!currentWallet())throw Error('Select market and create test wallet first');setBusy(true);const m=await refreshMarket(selected.marketPda);if(m.resolved||m.endTs<Date.now()/1000)throw Error('Market has closed');const amount=Number($('lpAmount').value);if(!Number.isFinite(amount)||amount<1||amount>100)throw Error('LP deposit must be 1–100 mUSDC');if(!confirm(`Provide ${amount} mock-USDC of LP liquidity to this PREDICT market? Liquidity providers face economic risk. This is NOT a trade.`))return;setBusy(true);await requireSol();setStatus('Submitting real pm-AMM liquidity deposit…');const sig=await provideLiquidity(m,amount);await waitForConfirmation(sig);writeJournal({signature:sig,kind:'LP_DEPOSIT',amount,side:'LP',marketPda:m.marketPda,at:Date.now(),status:'ONCHAIN_CONFIRMED_NOT_COUNTED_AS_TRADE'});setStatus('LP deposit confirmed on devnet: '+short(sig),'ok')}catch(e){failStatus(e)}finally{setBusy(false)}}
+async function doClaim(){if(busy)return;try{const addr=$('claimMarketPda').value.trim();if(!addr||!currentWallet())throw Error('Enter resolved market PDA and create wallet');setBusy(true);const m=await refreshMarket(addr);if(!m.resolved)throw Error('This market is not resolved yet');if(!confirm('Claim winning PREDICT tokens for this market?'))return;setBusy(true);await requireSol();const sig=await claimWinnings(m);await waitForConfirmation(sig);writeJournal({signature:sig,kind:'CLAIM',amount:0,side:'CLAIM',marketPda:addr,at:Date.now(),status:'ONCHAIN_CONFIRMED_NOT_COUNTED_AS_TRADE'});setStatus('Claim confirmed: '+short(sig),'ok')}catch(e){failStatus(e)}finally{setBusy(false)}}
 
 // Market formation uses PREDICT's REAL Commitment Vault program, not synthetic rewards.
+// ---------- v2.1.3: SOL for fees, sell before expiry, LP exit ----------
+function showSolHelp(sol, prefix = '') {
+  const el = $('statusText');
+  el.className = 'trade-status error';
+  el.textContent = `${prefix} This wallet has ${(sol.sol ?? 0).toFixed(4)} SOL and needs about 0.012 SOL for network fees. The devnet airdrop is rate-limited right now. Paste ${sol.address || 'your address'} into `.trim();
+  const a = document.createElement('a');
+  a.href = 'https://faucet.solana.com'; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = 'faucet.solana.com ↗';
+  el.append(a, document.createTextNode(', then try again.'));
+}
+async function requireSol() {
+  const sol = await ensureSolForFees();
+  if (!sol.ok) { showSolHelp(sol); const e = new Error('SOL_NEEDED'); e.shown = true; throw e; }
+}
+function failStatus(error) { if (!error?.shown) setStatus(error.message, 'error'); }
+
+let held = { yes: 0, no: 0 }, sellQ = null, sellRevision = 0;
+async function refreshPosition() {
+  const market = selected;
+  if (!market || !currentWallet()) {
+    held = { yes: 0, no: 0 }; $('heldYes').textContent = '—'; $('heldNo').textContent = '—';
+    $('lpPositionText').textContent = market ? 'Connect a wallet to see your liquidity.' : 'Select a market to see your liquidity.';
+    $('lpWithdrawBtn').hidden = $('lpClaimBtn').hidden = true; makeSellQuote(); return;
+  }
+  try {
+    const { state, deposited } = await readLpExitState(market.marketPda);
+    if (selected?.marketPda !== market.marketPda) return;
+    held = { yes: state.yes, no: state.no };
+    $('heldYes').textContent = format(state.yes / 1e6); $('heldNo').textContent = format(state.no / 1e6);
+    const shares = state.lpShares > 0n;
+    const unfinished = !shares && !state.resolved && Math.min(state.yes, state.no) > 0 && journal().some(r =>
+      r.kind === 'LP_WITHDRAW' && r.marketPda === market.marketPda && r.wallet === currentWallet());
+    $('lpPositionText').textContent = shares ? `Your liquidity here: ${format(deposited)} mUSDC deposited.`
+      : unfinished ? 'Liquidity withdrawn. Matched YES+NO pairs are still waiting to be redeemed.'
+      : state.hasLp ? (state.resolved ? 'Your liquidity position is still open on this resolved market.' : 'Your liquidity here has been withdrawn.')
+      : 'You have no liquidity on this market.';
+    $('lpWithdrawBtn').hidden = state.resolved || !(shares || unfinished);
+    $('lpWithdrawBtn').textContent = unfinished ? 'Finish withdrawal: redeem pairs ↗' : 'Withdraw all liquidity ↗';
+    $('lpClaimBtn').hidden = !(state.resolved && state.hasLp);
+  } catch { $('heldYes').textContent = $('heldNo').textContent = '—'; }
+  makeSellQuote();
+}
+function makeSellQuote() {
+  const revision = ++sellRevision;
+  sellQ = null; $('sellBtn').disabled = true; $('sellQuoteOut').textContent = '—'; $('sellQuoteMin').textContent = '—';
+  const sellSide = $('sellSide').value, amount = Number($('sellAmount').value);
+  if (!selected) return;
+  if (selected.resolved || selected.endTs <= Date.now() / 1000) { $('sellBtn').textContent = selected.resolved ? 'Resolved · claim instead' : 'Market closed'; return; }
+  if (!(held[sellSide] > 0)) { $('sellBtn').textContent = `No ${sellSide.toUpperCase()} to sell`; return; }
+  if (!Number.isFinite(amount) || amount <= 0) { $('sellBtn').textContent = 'Enter tokens to sell'; return; }
+  try {
+    const q = exactSellQuote(selected, sellSide, amount);
+    if (q.raw > held[sellSide]) throw new Error(`You hold ${format(held[sellSide] / 1e6)} ${sellSide.toUpperCase()}`);
+    q.minRaw = minForBps(q, getLimits().maxSlippageBps);
+    const pending = journal().some(row => row.wallet === currentWallet() && pendingSwap(row));
+    q.allowed = !pending;
+    if (revision !== sellRevision) return;
+    sellQ = q;
+    $('sellQuoteOut').textContent = `${format(q.quotedRaw / 1e6)} mUSDC`;
+    $('sellQuoteMin').textContent = `${(q.minRaw / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })} mUSDC`;
+    $('sellBtn').disabled = busy || !q.allowed;
+    $('sellBtn').textContent = pending ? 'Previous swap awaiting finality' : `Sell ${format(amount)} ${sellSide.toUpperCase()}`;
+  } catch (error) { $('sellBtn').textContent = error.message; }
+}
+async function sendSell() {
+  if (busy || !selected || !sellQ?.allowed) return;
+  const approved = { ...sellQ }, wallet = currentWallet(), marketPda = selected.marketPda, tokens = approved.raw / 1e6;
+  let signature;
+  setBusy(true);
+  try {
+    await withTradeLock(wallet, async () => {
+      if (journal().some(row => row.wallet === wallet && pendingSwap(row))) throw new Error('Check the existing swap receipt before starting a new trade');
+      if (Date.now() - approved.quoteAtMs > 15_000) throw new Error('Sell quote expired. Review it again.');
+      const fresh = await refreshMarket(marketPda);
+      const revised = exactSellQuote(fresh, approved.side, tokens);
+      if (revised.quotedRaw < approved.minRaw) throw new Error('Price moved. Review the updated minimum before approving.');
+      const bal = await getOutcomeBalancesRaw(fresh);
+      if (bal[approved.side] < approved.raw) throw new Error(`You no longer hold ${format(tokens)} ${approved.side.toUpperCase()}`);
+      await requireSol();
+      setStatus('Preparing your approved Devnet sell…');
+      await sellPrediction(fresh, approved.side, approved.raw, approved.minRaw, {
+        beforeSend() {
+          if (selected?.marketPda !== marketPda || $('sellSide').value !== approved.side || Number($('sellAmount').value) !== tokens) throw new Error('Sell details changed. Review again.');
+          if (fresh.resolved || fresh.endTs <= Date.now() / 1000) throw new Error('Market has closed');
+        },
+        beforeBroadcast(signer) {
+          const check = recheckBeforeBroadcast({ action: 'sell', mandate: mandate(), wallet, activeWallet: currentWallet(),
+            signer, marketPda, amount: tokens, market: fresh });
+          if (!check.ok) throw new Error(check.reason);
+        },
+        onSigned(signed, lastValidBlockHeight) {
+          writeJournal({ signature: signed, wallet, marketPda, marketName: fresh.name, side: approved.side, action: 'sell',
+            amount: tokens, minUsdc: approved.minRaw / 1e6, lastValidBlockHeight, at: Date.now(), status: 'SUBMITTED' });
+          signature = signed;
+          $('lastReceipt').innerHTML = `<a href="${explorer(signed)}" target="_blank" rel="noopener noreferrer">View transaction on Solscan ↗</a>`;
+        }
+      });
+    });
+    setStatus('Sell broadcast. Check its receipt below.', 'ok');
+    $('sellAmount').value = '';
+  } catch (error) {
+    if (signature) setStatus('Broadcast status is uncertain. Fuse will check the saved signature.', 'error'); else failStatus(error);
+  } finally {
+    setBusy(false);
+    if (signature) void reconcileReceipts();
+    void refreshPosition();
+  }
+}
+const lpStepText = { claimCommitter: 'LP allocation claimed', withdrawLiquidity: 'liquidity withdrawn',
+  redeemPair: 'YES+NO pairs redeemed', claimLpResiduals: 'pool share claimed', claimWinnings: 'winnings paid in mUSDC' };
+/**
+ * Shared LP exit for the market panel and the vault view. Each confirmed transaction is written to
+ * the journal the moment it lands, so a failure later in the run loses nothing and a second click
+ * resumes from chain state.
+ */
+async function doLpExit({ marketPda, vaultPda = null, report = setStatus }) {
+  if (busy) return;
+  const wallet = currentWallet();
+  try {
+    if (!wallet) throw new Error('Create your devnet test wallet first');
+    const { market, state } = await readLpExitState(marketPda, vaultPda, wallet);
+    const resolved = state.resolved;
+    if (!confirm(resolved
+      ? 'Claim your LP payout? Fuse claims your vault allocation if needed, mints your pool share, then redeems the winning side to mUSDC. Each step asks for a signature.'
+      : 'Withdraw all of your liquidity from this market? You get YES and NO tokens back; matched pairs are redeemed to mUSDC straight away. A one-sided remainder stays in your wallet as a position you can sell or hold.')) return;
+    setBusy(true); await requireSol();
+    report(resolved ? 'Claiming your LP payout…' : 'Withdrawing liquidity from the pm-AMM…');
+    const r = await runLpExit(marketPda, { vaultPda, owner: wallet, onStep(done) {
+      writeJournal({ signature: done.signature, wallet, kind: LP_EXIT_JOURNAL_KIND[done.step], amount: done.amountRaw / 1e6,
+        side: 'LP', marketPda, marketName: market.name, at: Date.now(), status: 'ONCHAIN_CONFIRMED_NOT_COUNTED_AS_TRADE' });
+      report(`Saved: ${lpStepText[done.step]} (${short(done.signature)}). Continuing…`);
+    } });
+    if (!r.completed.length) { report(resolved ? 'Nothing left to claim for this wallet.' : 'Nothing left to withdraw.'); return; }
+    const after = r.state;
+    const left = after && !after.resolved ? [after.yes > 0 && `${format(after.yes / 1e6)} YES`, after.no > 0 && `${format(after.no / 1e6)} NO`].filter(Boolean).join(' and ') : '';
+    const redeemed = r.completed.filter(x => x.step === 'redeemPair').reduce((n, x) => n + x.amountRaw, 0) / 1e6;
+    report(resolved ? 'LP payout claimed. Receipts are in your journal.'
+      : `Liquidity withdrawn${redeemed ? `; ${format(redeemed)} mUSDC back in your wallet` : ''}${left ? `; ${left} kept as a position you can sell` : ''}.`, 'ok');
+  } catch (error) {
+    if (error?.shown) return;
+    const saved = error?.completed?.length ? `Saved ${error.completed.map(x => lpStepText[x.step]).join(', ')}. ` : '';
+    const stepName = { claimCommitter: 'claim LP allocation', withdrawLiquidity: 'withdraw liquidity', redeemPair: 'redeem YES+NO pairs',
+      claimLpResiduals: 'claim pool share', claimWinnings: 'redeem winnings' }[error?.failedStep];
+    report(`${saved}${stepName ? `Stopped at "${stepName}": ` : ''}${error.message}${saved ? ' Click the same button to resume.' : ''}`, 'error');
+  } finally { setBusy(false); void refreshPosition(); void refreshBalance(); }
+}
+function doLpWithdraw() { if (selected) return doLpExit({ marketPda: selected.marketPda }); }
+function doLpClaim() { if (selected) return doLpExit({ marketPda: selected.marketPda }); }
+function doVaultLpPayout() {
+  const v = selectedVault;
+  if (!v?.launched || !v.market) return vaultMessage('This vault has not launched a market yet.', true);
+  return doLpExit({ marketPda: v.market, vaultPda: v.vaultPda, report: (text, tone) => vaultMessage(text, tone === 'error') });
+}
+
 function vaultMessage(message,failed=false){const el=$('vaultStatus');el.textContent=message;el.className='trade-status'+(failed?' error':'');}
 function vaultLink(vault, hash = 'vaults') {
   const url = new URL('/', location.href);
@@ -415,6 +584,8 @@ function renderLifecycle() {
   });
   $('lifeMarket').hidden = state !== 2;
   $('lifeClaim').hidden = !market?.resolved;
+  $('vaultLpPayoutBtn').hidden = !(vault?.launched && market?.resolved);
+  $('vaultLpPayoutNote').hidden = $('vaultLpPayoutBtn').hidden;
   if (!vault) {
     $('lifecycleStatus').textContent = 'Choose a commitment vault';
     return;
@@ -536,7 +707,7 @@ function events(){
  });
  $('refreshVaults').addEventListener('click',loadVaults);
  $('vaultSideYes').addEventListener('click',()=>{vaultSide='yes';renderVaultSelected();});$('vaultSideNo').addEventListener('click',()=>{vaultSide='no';renderVaultSelected();});$('vaultCommitBtn').addEventListener('click',doVaultCommit);$('vaultClaimBtn').addEventListener('click',()=>doVaultClaim(false));$('vaultRefundBtn').addEventListener('click',()=>doVaultClaim(true));
- $('walletBtn').addEventListener('click',e=>{e.stopPropagation();toggleWalletPanel();});$('walletPanel').addEventListener('click',e=>{e.stopPropagation();const b=e.target.closest('[data-wallet]');if(b)chooseWallet(b.dataset.wallet);});$('walletBurner').addEventListener('click',()=>{toggleWalletPanel(false);createAndFund();});$('walletDisconnect').addEventListener('click',async()=>{toggleWalletPanel(false);await disconnectWallet();setStatus('Wallet disconnected.');});document.addEventListener('click',()=>toggleWalletPanel(false));document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleWalletPanel(false);});onWalletChange(()=>{void refreshBalance();renderWallet();renderVaultSelected();void makeQuote({quiet:true});});$('fundBtn').addEventListener('click',createAndFund);$('restoreWalletBtn').addEventListener('click',()=>createAndFund({restore:true}));$('refreshMarkets').addEventListener('click',loadMarkets);
+ $('walletBtn').addEventListener('click',e=>{e.stopPropagation();toggleWalletPanel();});$('walletPanel').addEventListener('click',e=>{e.stopPropagation();const b=e.target.closest('[data-wallet]');if(b)chooseWallet(b.dataset.wallet);});$('walletBurner').addEventListener('click',()=>{toggleWalletPanel(false);createAndFund();});$('walletDisconnect').addEventListener('click',async()=>{toggleWalletPanel(false);await disconnectWallet();setStatus('Wallet disconnected.');});document.addEventListener('click',()=>toggleWalletPanel(false));document.addEventListener('keydown',e=>{if(e.key==='Escape')toggleWalletPanel(false);});onWalletChange(()=>{void refreshBalance();void refreshPosition();renderWallet();renderVaultSelected();void makeQuote({quiet:true});});$('fundBtn').addEventListener('click',createAndFund);$('restoreWalletBtn').addEventListener('click',()=>createAndFund({restore:true}));$('refreshMarkets').addEventListener('click',loadMarkets);
  $('marketSearch').addEventListener('input',e=>{marketQuery=e.target.value;renderMarkets();});
  $('marketSort').addEventListener('change',e=>{marketSort=e.target.value;renderMarkets();});
  $('marketChips').addEventListener('click',e=>{const b=e.target.closest('[data-cat]');if(!b)return;marketCat=b.dataset.cat;renderMarkets();});
@@ -545,7 +716,7 @@ function events(){
  $('sideYes').addEventListener('click',()=>{side='yes';renderSide();makeQuote();});$('sideNo').addEventListener('click',()=>{side='no';renderSide();makeQuote();});
  for(const id of ['tradeAmount','maxSingle','maxTotal','slippage'])$(id).addEventListener('change',()=>makeQuote());
  document.querySelectorAll('[data-amount]').forEach(btn=>btn.addEventListener('click',()=>{$('tradeAmount').value=btn.dataset.amount;document.querySelectorAll('[data-amount]').forEach(x=>x.classList.toggle('chosen',x===btn));makeQuote();}));
- $('agentBtn').addEventListener('click',agentSuggestion);$('tradeBtn').addEventListener('click',sendTrade);$('lpBtn').addEventListener('click',doLp);$('claimBtn').addEventListener('click',doClaim);
+ $('agentBtn').addEventListener('click',agentSuggestion);$('tradeBtn').addEventListener('click',sendTrade);$('lpBtn').addEventListener('click',doLp);$('sellBtn').addEventListener('click',sendSell);$('sellSide').addEventListener('change',()=>makeSellQuote());$('sellAmount').addEventListener('input',()=>makeSellQuote());$('sellMax').addEventListener('click',()=>{const h=held[$('sellSide').value]||0;$('sellAmount').value=h>=100_000?String(Math.floor(h/1e4)/100):'';makeSellQuote();});$('refreshPositionBtn').addEventListener('click',()=>refreshPosition());$('lpWithdrawBtn').addEventListener('click',doLpWithdraw);$('vaultLpPayoutBtn').addEventListener('click',doVaultLpPayout);$('lpClaimBtn').addEventListener('click',doLpClaim);$('claimBtn').addEventListener('click',doClaim);
  $('armBtn').addEventListener('click', () => {
    try { startTradeSession(currentWallet(), selected?.marketPda, getLimits()); void makeQuote(); }
    catch (error) { setStatus(error.message, 'error'); }

@@ -4,6 +4,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { assertDevnet } from '../src/predict/network.mjs';
 import { anchorIx, decodeBase58 } from '../src/predict/proof.mjs';
 import { isBase58 } from '../src/predict/attestation.mjs';
+import { tokenDelta, verifySellEvidence } from '../src/predict/evidence.mjs';
 import { DEVNET_MUSDC, PROGRAM_ID, RPC_DEFAULT } from '../src/predict/policy.mjs';
 
 const requirePredict = createRequire(new URL('../apps/predict/package.json', import.meta.url));
@@ -39,12 +40,6 @@ function ixFrom(tx, name, accounts) {
   }
   return { signer, data: decodeBase58(ix.data) };
 }
-function tokenDelta(tx, wallet, tokenMint) {
-  const sum = balances => balances.filter(row => row.owner === wallet && row.mint === tokenMint)
-    .reduce((amount, row) => amount + BigInt(row.uiTokenAmount.amount), 0n);
-  return sum(tx.meta.postTokenBalances ?? []) - sum(tx.meta.preTokenBalances ?? []);
-}
-
 async function main() {
   const origin = httpsUrl(process.env.PUBLIC_URL, 'PUBLIC_URL');
   const video = httpsUrl(process.env.PREDICT_VIDEO_URL, 'PREDICT_VIDEO_URL');
@@ -53,13 +48,14 @@ async function main() {
   const file = process.env.PREDICT_LIFECYCLE_INPUT;
   if (!file) fail('Set PREDICT_LIFECYCLE_INPUT to the signed lifecycle evidence JSON');
   const input = JSON.parse(await readFile(file, 'utf8'));
-  const { vaultPda, marketPda, createVault, commitments, launch, swaps, resolution, claim } = input;
+  const { vaultPda, marketPda, createVault, commitments, launch, swaps, sell, resolution, claim } = input;
   if (![vaultPda, marketPda].every(key => isBase58(key, 32))) fail('Valid vault and market addresses are required');
   if (!Array.isArray(commitments) || commitments.length < 2 || commitments.length > 20 ||
       !Array.isArray(swaps) || swaps.length < 3 || swaps.length > 30) {
     fail('Supply selected signatures for at least two commitments and three swaps');
   }
-  const signatures = [createVault, ...commitments, launch, ...swaps, resolution, claim];
+  if (!sell) fail('Supply one finalized Fuse sell for the featured market ("sell")');
+  const signatures = [createVault, ...commitments, launch, ...swaps, sell, resolution, claim];
   if (signatures.some(value => !isBase58(value, 64)) || new Set(signatures).size !== signatures.length) {
     fail('Every lifecycle step requires a distinct Solana transaction signature');
   }
@@ -131,10 +127,10 @@ async function main() {
   let latestTradeSlot = launched.slot;
   let tradedMUsdc = 0;
   for (const signature of swaps) {
-    const tx = await transaction(signature, 'Finalized Fuse swap');
+    const tx = await transaction(signature, 'Finalized Fuse buy');
     const { signer: wallet, data } = ixFrom(tx, 'swap', [[1, marketPda], [2, DEVNET_MUSDC],
       [3, market.yesMint.toBase58()], [4, market.noMint.toBase58()]]);
-    if (tx.slot < launched.slot || data.length !== 25 || data[8] > 1) fail('Swap order or parameters do not match');
+    if (tx.slot < launched.slot || data.length !== 25 || data[8] > 1) fail('Each "swaps" entry must be a buy (mUSDC→YES or mUSDC→NO) after launch');
     const side = data[8] === 0 ? 'yes' : 'no';
     const amount = data.readBigUInt64LE(9);
     const outcomeMint = (side === 'yes' ? market.yesMint : market.noMint).toBase58();
@@ -150,9 +146,19 @@ async function main() {
     tradedMUsdc += Number(amount) / 1e6;
     latestTradeSlot = Math.max(latestTradeSlot, tx.slot);
   }
-  if (tradedBy.size < 2 || sides.size !== 2 || stats.finalizedSwaps < swaps.length ||
+  // The sell is verified on its own: the buys above keep their YES and NO coverage unchanged.
+  const sellTx = await transaction(sell, 'Finalized Fuse sell');
+  const sellIx = ixFrom(sellTx, 'swap', [[1, marketPda], [2, DEVNET_MUSDC],
+    [3, market.yesMint.toBase58()], [4, market.noMint.toBase58()]]);
+  const sold = verifySellEvidence({ tx: sellTx, data: sellIx.data, wallet: sellIx.signer,
+    market: { marketPda, yesMint: market.yesMint.toBase58(), noMint: market.noMint.toBase58(), endTs: Number(market.endTs) },
+    launchSlot: launched.slot, receipt: await getJson(new URL(`/api/predict/receipts/${sell}`, origin)) });
+  latestTradeSlot = Math.max(latestTradeSlot, sold.slot);
+  if (!Number.isInteger(stats.sells) || stats.sells < 1) fail('Scoreboard must count the finalized sell');
+
+  if (tradedBy.size < 2 || sides.size !== 2 || stats.finalizedSwaps < swaps.length + 1 ||
       stats.uniqueTradingWallets < tradedBy.size || !Number.isFinite(stats.mUsdcVolume) ||
-      stats.mUsdcVolume + 0.000001 < tradedMUsdc) fail('Scoreboard must show both sides, two distinct trading wallets and the selected finalized swaps');
+      stats.mUsdcVolume + 0.000001 < tradedMUsdc + Number(sold.receivedRaw) / 1e6) fail('Scoreboard must show both sides, two distinct trading wallets and the selected finalized swaps');
 
   const resolved = await transaction(resolution, 'Market resolved');
   const resolvedIx = ixFrom(resolved, 'resolve_market', [[0, market.authority.toBase58()], [1, marketPda]]);
@@ -171,11 +177,12 @@ async function main() {
   const openingPriceBps = Number(market.initialPriceBps);
   if (!Number.isInteger(openingPriceBps) || openingPriceBps < 0 || openingPriceBps > 10000) fail('Opening price unavailable');
   const proof = {
-    schema: 'kult-fuse-devnet-lifecycle-v1', buildSha: sha, network: 'devnet', programId: PROGRAM_ID,
+    schema: 'kult-fuse-devnet-lifecycle-v2', buildSha: sha, network: 'devnet', programId: PROGRAM_ID,
     collateralMint: DEVNET_MUSDC, publicUrl: origin.href, videoUrl: video.href, vaultPda, marketPda,
     verifiedAt: new Date().toISOString(), openingPriceBps, winningSide: winning === 0 ? 'yes' : 'no',
     wallets: { commitmentAddresses: fundedBy.size, tradingAddresses: tradedBy.size },
     selectedFundingMUsdc: Number(fundedRaw) / 1e6, selectedTradeMUsdc: Number(tradedMUsdc.toFixed(6)),
+    sell: { side: sold.side, outcomeTokensSold: Number(sold.amountRaw) / 1e6, mUsdcReceived: Number(sold.receivedRaw) / 1e6 },
     claimMUsdc: Number(payout) / 1e6, resolutionEvidenceUrl: source.href,
     receipts
   };

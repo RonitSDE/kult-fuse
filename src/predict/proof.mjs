@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { DEVNET_MUSDC, PROGRAM_ID } from './policy.mjs';
 import { APP_MEMO, MEMO_PROGRAM_ID } from './tagged-swap.mjs';
+export const LIGHTHOUSE_PROGRAM_ID = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
 const DAO_AUTHORITY='4qXyczAr5DuBVaHUwmZT5Xt6hgQ6RwqBYcFGtrv8QEph';
 
 // Minimal Base58 decoder so the independent verifier does not trust a client's
@@ -56,8 +57,11 @@ export function verifyPredictSwapTx(tx, { signature, wallet, marketPda, expected
     const message = tx.transaction.message;
     const topLevel = message.instructions;
     const memos = ixs.filter(ix => ix.programId === MEMO_PROGRAM_ID);
+    // Lighthouse (immutable, assertion-only) is allowed because Phantom may add its guard
+    // instructions to transactions it signs. It moves no tokens; the token-delta checks below
+    // still require exactly the attested spend and outcome gain.
     const allowedPrograms = new Set([PROGRAM_ID, MEMO_PROGRAM_ID, 'ComputeBudget111111111111111111111111111111',
-      'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL']);
+      'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', LIGHTHOUSE_PROGRAM_ID]);
     if (tx.transaction.signatures?.[0] !== signature || keys[0]?.pubkey !== wallet ||
         swaps.length !== 1 || memos.length !== 1 ||
         !topLevel.some(ix => isSwap(ix)) || !topLevel.some(ix => String(ix.programId) === MEMO_PROGRAM_ID) ||
@@ -65,18 +69,20 @@ export function verifyPredictSwapTx(tx, { signature, wallet, marketPda, expected
         ixs.filter(ix => ix.programId === PROGRAM_ID).length !== 1 ||
         topLevel.some(ix => String(ix.programId) === 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL' &&
           (ix.parsed?.type !== 'createIdempotent' && ix.parsed?.type !== 'create'))) {
-      return err('Expected one direct PREDICT buy and one Fuse attestation');
+      return err('Expected one direct PREDICT swap and one Fuse attestation');
     }
     const data = decodeBase58(swap.data);
-    if (data.length !== 25 || data[8] > 1 ||
+    // Directions from the IDL: 0 UsdcToYes, 1 UsdcToNo, 2 YesToUsdc, 3 NoToUsdc. YES↔NO swaps don't count.
+    if (data.length !== 25 || data[8] > 3 ||
         [wallet, marketPda, DEVNET_MUSDC, expectedMints.yes, expectedMints.no]
           .some((account, index) => swap.accounts[index] !== account)) {
-      return err('PREDICT swap accounts or buy parameters do not match');
+      return err('PREDICT swap accounts or trade parameters do not match');
     }
     intent = {
       wallet, marketPda, blockhash: message.recentBlockhash,
-      side: data[8] === 0 ? 'yes' : 'no',
-      amountRaw: Number(data.readBigUInt64LE(9)), minOutRaw: Number(data.readBigUInt64LE(17))
+      side: data[8] % 2 === 0 ? 'yes' : 'no',
+      amountRaw: Number(data.readBigUInt64LE(9)), minOutRaw: Number(data.readBigUInt64LE(17)),
+      ...(data[8] >= 2 ? { action: 'sell' } : {})
     };
     if (!attestation.verify(memoText(memos[0]), intent, tx.blockTime)) {
       return err('Missing, expired or mismatched Fuse attestation');
@@ -87,24 +93,40 @@ export function verifyPredictSwapTx(tx, { signature, wallet, marketPda, expected
     return err('Swap was not sent through KULT Fuse (no self-declared app memo)');
   }
 
-  const pre=tokenAmount(tx.meta.preTokenBalances, wallet, DEVNET_MUSDC);
-  const post=tokenAmount(tx.meta.postTokenBalances, wallet, DEVNET_MUSDC);
-  const spend=pre-post;
-  if (spend<=0n || spend>100000000000n || (intent && spend !== BigInt(intent.amountRaw))) {
-    return err('No matching mUSDC debit for signer');
+  const usdcDelta=tokenAmount(tx.meta.postTokenBalances, wallet, DEVNET_MUSDC)-tokenAmount(tx.meta.preTokenBalances, wallet, DEVNET_MUSDC);
+  const delta = (mint) => tokenAmount(tx.meta.postTokenBalances, wallet, mint) - tokenAmount(tx.meta.preTokenBalances, wallet, mint);
+  const selling = intent ? intent.action === 'sell' : usdcDelta > 0n;
+  let outcomeMint, usdcRaw;
+  if (!selling) {
+    const spend=-usdcDelta;
+    if (spend<=0n || spend>100000000000n || (intent && spend !== BigInt(intent.amountRaw))) {
+      return err('No matching mUSDC debit for signer');
+    }
+    outcomeMint = intent ? expectedMints[intent.side] : [expectedMints.yes, expectedMints.no].find(mint => delta(mint) > 0n);
+    if (!outcomeMint || (intent && (delta(outcomeMint) < BigInt(intent.minOutRaw) ||
+        delta(expectedMints[intent.side === 'yes' ? 'no' : 'yes']) !== 0n))) {
+      return err('No matching increase in selected market YES/NO mint');
+    }
+    usdcRaw = spend;
+  } else {
+    // Sell: exactly the attested outcome tokens leave the wallet, at least the signed minimum
+    // of mUSDC arrives, and the other outcome is untouched.
+    outcomeMint = intent ? expectedMints[intent.side] : [expectedMints.yes, expectedMints.no].find(mint => delta(mint) < 0n);
+    if (!outcomeMint || (intent && (-delta(outcomeMint) !== BigInt(intent.amountRaw) ||
+        delta(expectedMints[intent.side === 'yes' ? 'no' : 'yes']) !== 0n))) {
+      return err('No matching decrease in selected market YES/NO mint');
+    }
+    if (usdcDelta<=0n || (intent && usdcDelta < BigInt(intent.minOutRaw))) return err('No matching mUSDC credit for signer');
+    usdcRaw = usdcDelta;
   }
-  const proceeds = (mint) => tokenAmount(tx.meta.postTokenBalances, wallet, mint)
-    - tokenAmount(tx.meta.preTokenBalances, wallet, mint);
-  const outcomeMint = intent ? expectedMints[intent.side]
-    : [expectedMints.yes, expectedMints.no].find(mint => proceeds(mint) > 0n);
-  if (!outcomeMint || (intent && (proceeds(outcomeMint) < BigInt(intent.minOutRaw) ||
-      proceeds(expectedMints[intent.side === 'yes' ? 'no' : 'yes']) !== 0n))) {
-    return err('No matching increase in selected market YES/NO mint');
-  }
-  const raw=spend.toString();
   const daoFeeRaw=tokenAmount(tx.meta.postTokenBalances, DAO_AUTHORITY, DEVNET_MUSDC)-tokenAmount(tx.meta.preTokenBalances, DAO_AUTHORITY, DEVNET_MUSDC);
   const daoFeeObservedMUsdc=daoFeeRaw>0n?Number(daoFeeRaw)/1e6:null;
-  return {ok:true, signature, wallet, marketPda, outcomeMint, attribution, attestationId, side: intent?.side, mUsdcSpentRaw:raw, spent: Number(spend)/1e6, time:tx.blockTime, evidence:'CONFIRMED_ONCHAIN_SWAP', feeEstimate:Math.round(Number(spend)*0.02)/1e6, feeEvidence:'ESTIMATE_2_PERCENT_OF_SPEND_NOT_PARSED_FROM_EVENTS', daoFeeObservedMUsdc, daoFeeEvidence:daoFeeRaw>0n?'OBSERVED_DAO_TOKEN_BALANCE_DELTA':'NOT_AVAILABLE'};
+  const usdc = Number(usdcRaw)/1e6;
+  // Fee is 2% of the USDC leg: of the input on buys, of the gross output on sells (net = 98%).
+  const feeEstimate = selling ? Math.round(Number(usdcRaw)*200/9800)/1e6 : Math.round(Number(usdcRaw)*0.02)/1e6;
+  return {ok:true, signature, wallet, marketPda, outcomeMint, attribution, attestationId, side: intent?.side, action: selling ? 'sell' : 'buy',
+    mUsdcSpentRaw: selling ? '0' : usdcRaw.toString(), mUsdcReceivedRaw: selling ? usdcRaw.toString() : '0', outcomeAmountRaw: (selling ? -delta(outcomeMint) : delta(outcomeMint)).toString(), spent: selling ? 0 : usdc, received: selling ? usdc : 0,
+    time:tx.blockTime, evidence:'CONFIRMED_ONCHAIN_SWAP', feeEstimate, feeEvidence:'ESTIMATE_2_PERCENT_OF_USDC_LEG_NOT_PARSED_FROM_EVENTS', daoFeeObservedMUsdc, daoFeeEvidence:daoFeeRaw>0n?'OBSERVED_DAO_TOKEN_BALANCE_DELTA':'NOT_AVAILABLE'};
 }
 export function statsFromReceipts(receipts, finalizedOnly = false) {
   const data = receipts.filter(r => r?.ok && (finalizedOnly
@@ -112,5 +134,5 @@ export function statsFromReceipts(receipts, finalizedOnly = false) {
     : r.evidence === 'CONFIRMED_ONCHAIN_SWAP'));
   const wallets=new Set(data.map(r=>r.wallet));
   const counts=new Map(); data.forEach(r=>counts.set(r.wallet, (counts.get(r.wallet)||0)+1));
-  return { uniqueTradingWallets:wallets.size, confirmedSwaps:finalizedOnly ? 0 : data.length, finalizedSwaps:finalizedOnly ? data.length : 0, mUsdcVolume:Number(data.reduce((n,r)=>n+Number(r.spent||0),0).toFixed(6)), repeatTraders:[...counts.values()].filter(n=>n>=2).length, feeEstimationMUsdc:Number(data.reduce((n,r)=>n+Number(r.feeEstimate||0),0).toFixed(6)), feeEvidence:'ESTIMATE_NOT_EXACT_CHAIN_FEE_TRANSFER', observedDaoFeesMUsdc:data.some(r=>Number.isFinite(r.daoFeeObservedMUsdc))?Number(data.reduce((n,r)=>n+(r.daoFeeObservedMUsdc||0),0).toFixed(6)):null, daoFeeTransactions:data.filter(r=>Number.isFinite(r.daoFeeObservedMUsdc)).length, network:'devnet', unit:'mUSDC', audited:false, receipts:data.slice(-30).reverse().map(({signature,wallet,marketPda,spent,time,side,attribution,slot})=>({signature,wallet,marketPda,spent,time,side,attribution,slot})) };
+  return { uniqueTradingWallets:wallets.size, confirmedSwaps:finalizedOnly ? 0 : data.length, finalizedSwaps:finalizedOnly ? data.length : 0, mUsdcVolume:Number(data.reduce((n,r)=>n+Number(r.spent||0)+Number(r.received||0),0).toFixed(6)), buys:data.filter(r=>(r.action||'buy')==='buy').length, sells:data.filter(r=>r.action==='sell').length, repeatTraders:[...counts.values()].filter(n=>n>=2).length, feeEstimationMUsdc:Number(data.reduce((n,r)=>n+Number(r.feeEstimate||0),0).toFixed(6)), feeEvidence:'ESTIMATE_NOT_EXACT_CHAIN_FEE_TRANSFER', observedDaoFeesMUsdc:data.some(r=>Number.isFinite(r.daoFeeObservedMUsdc))?Number(data.reduce((n,r)=>n+(r.daoFeeObservedMUsdc||0),0).toFixed(6)):null, daoFeeTransactions:data.filter(r=>Number.isFinite(r.daoFeeObservedMUsdc)).length, network:'devnet', unit:'mUSDC', audited:false, receipts:data.slice(-30).reverse().map(({signature,wallet,marketPda,spent,received,action,time,side,attribution,slot})=>({signature,wallet,marketPda,spent,received,action:action||'buy',time,side,attribution,slot})) };
 }

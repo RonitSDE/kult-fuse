@@ -50,3 +50,27 @@ export function txExplorer(signature) {
   if (!/^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(signature)) return null;
   return `https://solscan.io/tx/${signature}?cluster=devnet`;
 }
+
+/**
+ * Runs after the wallet popup returns a signature and before broadcast. The user can switch
+ * wallet, pause the session, or let it expire while the popup is open, so the pre-popup check
+ * is not enough. Quote age is not rechecked here: the signed minimum output is enforced onchain.
+ * Buys need a live, unpaused session for this wallet and market with budget left.
+ * Sells spend no budget, but a paused session still stops them.
+ */
+export function recheckBeforeBroadcast({ action = 'buy', mandate, wallet, activeWallet, signer, marketPda, amount, market, nowMs = Date.now() }) {
+  const refuse = (reason) => ({ ok: false, reason });
+  if (!wallet || activeWallet !== wallet) return refuse('Wallet changed while the approval was open. Nothing was sent.');
+  if (signer !== wallet) return refuse('A different wallet signed. Nothing was sent.');
+  if (market && (market.resolved || market.endTs * 1000 <= nowMs)) return refuse('Market closed while the approval was open. Nothing was sent.');
+  if (mandate?.killed && (!Number.isFinite(mandate.expiresAtMs) || nowMs < mandate.expiresAtMs) && mandate.wallet === wallet) {
+    return refuse('Session paused while the approval was open. Nothing was sent.');
+  }
+  if (action === 'sell') return { ok: true };
+  if (!mandate || mandate.wallet !== wallet) return refuse('No approved session for this wallet. Nothing was sent.');
+  if (mandate.marketPda !== marketPda) return refuse('Session limits now cover a different market. Nothing was sent.');
+  if (!Number.isFinite(mandate.expiresAtMs) || nowMs >= mandate.expiresAtMs) return refuse('Session expired while the approval was open. Nothing was sent.');
+  if (!Number.isFinite(mandate.spent) || amount + mandate.spent > mandate.maxTotal + 1e-8) return refuse('Session budget used up while the approval was open. Nothing was sent.');
+  if (amount > mandate.maxSingle + 1e-8) return refuse('Per-trade cap changed. Nothing was sent.');
+  return { ok: true };
+}
