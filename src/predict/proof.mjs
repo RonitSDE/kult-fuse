@@ -43,7 +43,7 @@ export function verifyPredictSwapTx(tx, { signature, wallet, marketPda, expected
   if (!keys.some(k=>k.pubkey===wallet && k.signer)) return err('Wallet was not a transaction signer');
   const ixs=programInstructions(tx);
   const isSwap = (ix) => {
-    try { return ix.programId === PROGRAM_ID && decodeBase58(ix.data).subarray(0, 8).equals(swapDiscriminator); }
+    try { return String(ix.programId) === PROGRAM_ID && decodeBase58(ix.data).subarray(0, 8).equals(swapDiscriminator); }
     catch { return false; }
   };
   const swaps = ixs.filter(isSwap);

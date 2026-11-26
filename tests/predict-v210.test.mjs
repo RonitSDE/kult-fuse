@@ -241,3 +241,11 @@ test('v2.1.3: stats count buys and sells, and volume includes both legs', async 
   const s = statsFromReceipts([{ ...base, signature: 'a', spent: 5, action: 'buy' }, { ...base, signature: 'b', received: 3.2, action: 'sell' }, { ...base, signature: 'c', spent: 1 }], true);
   assert.equal(s.buys, 2); assert.equal(s.sells, 1); assert.equal(s.mUsdcVolume, 9.2); assert.equal(s.finalizedSwaps, 3);
 });
+
+test('strict verifier accepts getParsedTransaction output where programId is a PublicKey object', () => {
+  const asKey = s => ({ toString: () => s, toBase58: () => s });
+  const t = tx();
+  t.transaction.message.instructions = t.transaction.message.instructions.map(ix => ({ ...ix, programId: asKey(ix.programId) }));
+  t.transaction.message.accountKeys = t.transaction.message.accountKeys.map(k => ({ ...k, pubkey: asKey(k.pubkey) }));
+  assert.equal(verifyPredictSwapTx(t, options).attribution, 'FUSE_API_ATTESTED');
+});
