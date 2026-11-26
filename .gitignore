@@ -10,3 +10,4 @@ target/
 INTERVIEW_PREP.md
 predict-proofs.json
 .playwright-cli/
+.env.production
