@@ -1,3 +1,4 @@
+import { rpcList, connectionConfig } from '../../predict/rpc-fallback.mjs';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 
@@ -26,7 +27,8 @@ export class AnchorFuseClient {
     const secret=JSON.parse(this.env.FUSE_AUTHORITY_PRIVATE_KEY_JSON || this.env.FUSE_EXECUTION_PRIVATE_KEY_JSON || '[]');
     if(!Array.isArray(secret)||secret.length<32) throw new Error('FUSE_AUTHORITY_PRIVATE_KEY_JSON missing');
     const keypair=web3.Keypair.fromSecretKey(Uint8Array.from(secret));
-    const connection=new web3.Connection(this.env.SOLANA_RPC_URL,this.env.SOLANA_COMMITMENT||'confirmed');
+    const urls=rpcList(this.env.SOLANA_RPC_URL,this.env.SOLANA_RPC_FALLBACK_URL);
+    const connection=new web3.Connection(urls[0],{...connectionConfig(urls,{commitment:this.env.SOLANA_COMMITMENT||'confirmed',timeoutMs:15000,retryRateLimitWhenSingle:true}),...(this.env.SOLANA_WS_URL?{wsEndpoint:this.env.SOLANA_WS_URL}:{})});
     const wallet=new anchor.Wallet(keypair);
     const provider=new anchor.AnchorProvider(connection,wallet,{commitment:this.env.SOLANA_COMMITMENT||'confirmed'});
     const idlProgramId=new web3.PublicKey(idl.address);

@@ -1,3 +1,4 @@
+import { rpcList, connectionConfig } from './rpc-fallback.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { statsFromReceipts, verifyPredictSwapTx } from './proof.mjs';
@@ -161,13 +162,8 @@ export async function createDefaultPredictRegistry(env = process.env) {
   if (env.SOLANA_CLUSTER && env.SOLANA_CLUSTER !== 'devnet') throw new Error('PREDICT requires Solana Devnet');
   const attestation = createTradeAttestation(env.PREDICT_ATTESTATION_KEY);
   const { Connection, PublicKey } = await import('@solana/web3.js');
-  const rpc = new URL(env.PREDICT_DEVNET_RPC || RPC_DEFAULT);
-  if (rpc.protocol !== 'https:' || rpc.username || rpc.password) throw new Error('Use an HTTPS Devnet RPC URL');
-  const connection = new Connection(rpc.href, {
-    commitment: 'confirmed',
-    disableRetryOnRateLimit: true,
-    fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(6500) })
-  });
+  const urls = rpcList(env.PREDICT_DEVNET_RPC || RPC_DEFAULT, env.PREDICT_DEVNET_RPC_FALLBACK, env.SOLANA_RPC_FALLBACK_URL);
+  const connection = new Connection(urls[0], connectionConfig(urls, { timeoutMs: 6500 }));
   const program = new PublicKey(PROGRAM_ID);
   const storePath = env.PREDICT_RECEIPTS_FILE || path.join(env.DATA_DIR || './.data', 'predict-receipts.json');
   let verifiedUntil = 0;

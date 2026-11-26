@@ -87,7 +87,7 @@ async function api(req, res, url) {
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 
 const predictConnectOrigins = new Set(['https://api.devnet.solana.com','https://pm-amm-devnet.vercel.app']);
-for(const raw of [process.env.VITE_DEVNET_RPC]){
+for(const raw of [process.env.VITE_DEVNET_RPC, process.env.VITE_DEVNET_RPC_FALLBACK]){
  if(!raw)continue;
  const parsed=new URL(raw);
  if(parsed.protocol!=='https:' || /mainnet/i.test(parsed.hostname))throw Error('Only HTTPS devnet RPC permitted by PREDICT CSP');

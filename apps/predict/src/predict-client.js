@@ -1,3 +1,4 @@
+import { rpcList, connectionConfig } from '../../../src/predict/rpc-fallback.mjs';
 import * as web3 from '@solana/web3.js';
 import * as splToken from '@solana/spl-token';
 import * as sdk from '@pm-amm/sdk';
@@ -20,10 +21,10 @@ const MINT='3WQ8hCqTNwjrh8WzE2XyoZoUrd1miPcwWfMkmFPUMEWZ';
 const key='https://api.devnet.solana.com';
 export const rpcUrl=import.meta.env.VITE_DEVNET_RPC || key;
 if (/mainnet|mainnet-beta/i.test(rpcUrl))throw Error('Live-mainnet RPC is forbidden in this release');
-export const connection=new Connection(rpcUrl, {
- commitment: 'confirmed', disableRetryOnRateLimit: true,
- fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(9000) })
-});
+const rpcUrls=rpcList(rpcUrl, import.meta.env.VITE_DEVNET_RPC_FALLBACK);
+// Sends go to the primary first and fall back on errors or rate limits; signature
+// subscriptions use the public devnet websocket, which every provider path can reach.
+export const connection=new Connection(rpcUrls[0], connectionConfig(rpcUrls, { timeoutMs: 9000, wsEndpoint: 'wss://api.devnet.solana.com' }));
 const programId=new PublicKey(PROGRAM), mint=new PublicKey(MINT);
 export { ensureWallet, getWallet, hasLegacyWallet, availableWallets, connectWallet, disconnectWallet, restoreWallet, onWalletChange } from './wallet.js';
 let chainCheck;
